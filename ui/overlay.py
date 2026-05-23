@@ -44,7 +44,9 @@ import pyglet
 from pyglet import shapes
 from pyglet.window import Window, key
 from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
+# PollingObserver avoids inotify so we keep working on machines where
+# fs.inotify.max_user_watches is already saturated by IDEs / dev tools.
+from watchdog.observers.polling import PollingObserver as Observer
 
 HERE = Path(__file__).resolve().parent
 SPRITE_PATH = HERE / "assets" / "sprites" / "lobster_72.png"
@@ -212,7 +214,9 @@ class _GateFileHandler(FileSystemEventHandler):
 
 def start_gate_watcher(state: GateState) -> Observer:
     handler = _GateFileHandler(state)
-    observer = Observer()
+    # Poll every 500 ms — plenty for a human-driven operator action and
+    # cheap (the file is 4-8 bytes on tmpfs).
+    observer = Observer(timeout=0.5)
     # Watch the parent dir so we catch creation events too.
     observer.schedule(handler, str(GATE_STATE_FILE.parent), recursive=False)
     observer.daemon = True
