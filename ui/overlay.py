@@ -99,6 +99,17 @@ class Lobster:
     bounce_origin_x: float = 0.0
     bounce_elapsed: float = 0.0
 
+    # Carried file (Phase 4 B4). None when empty-handed. The label is what
+    # gets rendered on screen — the actual filesystem op happens in the
+    # sandbox via the agent's desktop-trash skill; this is just the visual.
+    carried_file: str | None = None
+
+    def pickup(self, filename: str) -> None:
+        self.carried_file = filename
+
+    def drop(self) -> None:
+        self.carried_file = None
+
     def walk_to(self, target: tuple[float, float]) -> None:
         if self.state == LobsterState.WALKING:
             self.walk_origin = (self.sprite.x, self.base_y)
@@ -160,6 +171,15 @@ class Lobster:
         if t >= 1.0:
             self.state = LobsterState.IDLE
             self.sprite.y = self.walk_target[1]
+            # Arrived at the destination. If we're carrying a file AND the
+            # destination is the trash zone, the file is dropped into the
+            # trash (clear carry). Walking back to home keeps the file —
+            # operator can decide what happens next.
+            if (
+                self.carried_file is not None
+                and abs(self.walk_target[0] - TRASH_ZONE_POS[0]) < 5
+            ):
+                self.drop()
 
     def _step_bounce(self, dt: float) -> None:
         self.bounce_elapsed += dt
@@ -285,6 +305,24 @@ def main() -> int:
     gate_state = GateState()
     gate_observer = start_gate_watcher(gate_state)
 
+    # Carried-file label that follows the lobster while carry is non-None.
+    # Drawn above-right of the sprite anchor.
+    carry_label = pyglet.text.Label(
+        "",
+        font_name="Sans", font_size=11, color=(40, 30, 20, 230),
+        x=0, y=0, anchor_x="center", anchor_y="bottom",
+        bold=True,
+    )
+    carry_bg = shapes.Rectangle(
+        x=0, y=0, width=10, height=10,
+        color=(255, 255, 255),
+    )
+    carry_bg.opacity = 220
+
+    # Default file to pick up on P. In B5 this will come from a real
+    # desktop-scan call into the sandbox.
+    DEFAULT_PICKUP = "old_disk.iso"
+
     initial_color = GATE_COLOR_OPEN if gate_state.is_open else GATE_COLOR_CLOSED
     gate_shape = shapes.Rectangle(
         x=GATE_X, y=GATE_Y, width=GATE_WIDTH, height=GATE_HEIGHT,
@@ -293,7 +331,7 @@ def main() -> int:
 
     pyglet.gl.glClearColor(1.0, 0.97, 0.91, 1.0)
     instr = pyglet.text.Label(
-        "SPACE: walk to trash   R: walk home   B: bounce   ESC: quit",
+        "SPACE: walk to trash   R: walk home   B: bounce   P: pick up   D: drop   ESC: quit",
         font_name="Sans", font_size=11, color=(80, 60, 40, 200),
         x=12, y=STAGE_H - 18,
     )
@@ -312,12 +350,32 @@ def main() -> int:
 
     refresh_gate_label_and_color()
 
+    def position_carry():
+        # The label hugs the upper-right of the sprite's hitbox so it
+        # bobs and bounces with the lobster naturally.
+        sx, sy = lobster.sprite.x, lobster.sprite.y
+        offset_x = 26  # slight right of head
+        offset_y = SPRITE_PX / 2 + 4
+        carry_label.x = sx + offset_x
+        carry_label.y = sy + offset_y
+        # Background sized to the label content.
+        text_w = carry_label.content_width + 14
+        text_h = carry_label.content_height + 4
+        carry_bg.x = carry_label.x - text_w / 2
+        carry_bg.y = carry_label.y - 2
+        carry_bg.width = text_w
+        carry_bg.height = text_h
+
     @window.event
     def on_draw():
         window.clear()
         gate_shape.draw()
         gate_label.draw()
         lobster.sprite.draw()
+        if lobster.carried_file is not None:
+            position_carry()
+            carry_bg.draw()
+            carry_label.draw()
         instr.draw()
 
     @window.event
@@ -330,6 +388,12 @@ def main() -> int:
             lobster.walk_to(HOME_POS)
         elif symbol == key.B:
             lobster.bounce()
+        elif symbol == key.P:
+            if lobster.carried_file is None:
+                lobster.pickup(DEFAULT_PICKUP)
+                carry_label.text = f"📄 {DEFAULT_PICKUP}"
+        elif symbol == key.D:
+            lobster.drop()
 
     def tick(dt: float):
         new_state = gate_state.consume_change()
