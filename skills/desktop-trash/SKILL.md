@@ -6,20 +6,20 @@ metadata: { "openclaw": { "emoji": "🦞" } }
 
 # desktop-trash
 
-Goal: trash a single file. **Expected to be denied** under the default filesystem policy — that denial is the whole point of the demo. When the user wants the trash to actually work, they grant a policy preset that adds `/sandbox/demo/trash/` to `read_write`.
+Goal: trash a single file. **Expected to be denied** under the default filesystem policy — that denial is the whole point of the demo. When the user wants the trash to actually work, they grant a policy preset that adds `/opt/agent-trash/` to `read_write`.
 
 ## Input
 
-A single `from` path (from `desktop-plan` output, action=trash). The destination is always `/sandbox/demo/trash/<basename>`.
+A single `from` path (from `desktop-plan` output, action=trash). The destination is always `/opt/agent-trash/<basename>`.
 
 Example:
 - `from`: `/sandbox/demo/desktop/old_disk.iso`
-- Computed `to`: `/sandbox/demo/trash/old_disk.iso`
+- Computed `to`: `/opt/agent-trash/old_disk.iso`
 
 ## Procedure
 
 1. Verify `from` exists with `test -f "$FROM"`. If not, return `result=error`.
-2. Compute `to` = `/sandbox/demo/trash/` + basename of `from`.
+2. Compute `to` = `/opt/agent-trash/` + basename of `from`.
 3. Attempt the move with this exact bash command:
    ```bash
    mv "$FROM" "$TO"
@@ -45,10 +45,10 @@ When blocked (the gate):
   "file": "old_disk.iso",
   "action": "trash",
   "from": "/sandbox/demo/desktop/old_disk.iso",
-  "to":   "/sandbox/demo/trash/old_disk.iso",
+  "to":   "/opt/agent-trash/old_disk.iso",
   "result": "denied",
-  "reason": "policy: /sandbox/demo/trash is not in read_write; the trash-writable preset must be granted to open the gate",
-  "remediation": "ask the operator to run: nemoclaw hack-agent policy-add filesystem-trash"
+  "reason": "policy: /opt/agent-trash is not in read_write; the trash-writable preset must be granted to open the gate",
+  "remediation": "ask the operator to run: nemoclaw hack-agent policy-add --from-file ./policies/trash-writable.yaml --yes"
 }
 ```
 

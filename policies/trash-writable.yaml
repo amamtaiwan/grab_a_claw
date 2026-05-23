@@ -2,23 +2,29 @@
 #
 # Apply with:   nemoclaw hack-agent policy-add --from-file ./policies/trash-writable.yaml --yes
 # Remove with:  nemoclaw hack-agent policy-remove trash-writable
-# Verify with:  openshell policy get hack-agent --full
+# Verify with:  openshell policy get hack-agent --full | grep -A1 /opt/agent-trash
 #
-# This preset adds /sandbox/demo/trash to filesystem_policy.read_write. With it
+# This preset adds /opt/agent-trash to filesystem_policy.read_write. With it
 # applied, the agent's desktop-trash skill can complete `mv` operations into
-# the trash. Without it, Landlock denies those writes at the kernel level and
-# the skill returns a structured "denied" result that the animation layer
-# renders as the lobster bouncing off a glowing gate.
+# the trash. Without it, Landlock denies those writes at the kernel level
+# (because /opt isn't in any default rule) and the skill returns a structured
+# "denied" result that the animation layer renders as the lobster bouncing
+# off a glowing gate.
 #
-# Granting this preset is meant to be a deliberate, audited act — the
-# operator types the command, OpenShell logs the policy revision, and the
-# gate visual flips to "open" via the OCSF audit log subscriber in
-# ui/overlay.py.
+# Why /opt/agent-trash and not /sandbox/demo/trash?
+# OpenShell's `include_workdir: true` (creation-locked) adds the entire
+# /sandbox tree to read_write, which means any path *under* /sandbox is
+# writable. We can't carve out a sub-deny with Landlock (rules are
+# additive — see ops/POLICY_STRATEGY.md). Putting the trash dir outside
+# /sandbox in a path that's *not* in any default rule means Landlock
+# default-deny applies. This preset is the only way to grant write access
+# to that path — making the act of applying the preset the operator's
+# explicit consent to delete.
 
 preset:
   name: trash-writable
-  description: "Open the trash gate — allows the meet_a_claw agent to move files into /sandbox/demo/trash. Default deny is restored when this preset is removed."
+  description: "Open the trash gate — allows the meet_a_claw agent to move files into /opt/agent-trash. Default deny is restored when this preset is removed."
 
 filesystem_policy:
   read_write:
-    - /sandbox/demo/trash
+    - /opt/agent-trash

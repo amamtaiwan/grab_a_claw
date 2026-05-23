@@ -16,12 +16,10 @@
 version: 1
 
 filesystem_policy:
-  # meet_a_claw modification (2026-05-24): include_workdir flipped to FALSE so
-  # /sandbox is NOT auto-granted as read_write. The trash gate depends on
-  # /sandbox/demo/trash being denied by Landlock — that requires removing the
-  # broad /sandbox grant. Original baseline is backed up at
-  # openclaw-sandbox.yaml.meet_a_claw.bak.
-  include_workdir: false
+  # Home directory writable (matches Hermes). Agents can create dotfiles,
+  # caches, etc. natively. Immutability is opt-in via `shields up` (DAC +
+  # chattr only — Landlock can't be toggled at runtime).
+  include_workdir: true
   read_only:
     - /usr
     - /lib
@@ -30,8 +28,6 @@ filesystem_policy:
     - /app
     - /etc
     - /var/log
-    - /sandbox                      # meet_a_claw: traversal + read of /sandbox itself
-                                    # (.bashrc, .profile, dotfiles owned by root)
   read_write:
     - /tmp
     - /dev/null
@@ -44,18 +40,6 @@ filesystem_policy:
                                     # .linuxbrew (#3913); runtime writes here let
                                     # `brew install <formula>` extract bottles
                                     # and manage Cellar/opt symlinks.
-    # meet_a_claw: writable scratch the agent uses out of the box.
-    - /sandbox/.cache               # generic XDG cache (pip wheels, npm cache, etc.)
-    - /sandbox/.config              # XDG config
-    - /sandbox/.npm                 # npm cache (skill install / openclaw plugins)
-    - /sandbox/.nv                  # NVIDIA CUDA cache
-    # meet_a_claw: the agent's working surface for the desktop-cleanup demo.
-    - /sandbox/demo/desktop         # source of files to organize
-    - /sandbox/demo/sorted          # destination for legit moves
-    # NOTE: /sandbox/demo/trash is INTENTIONALLY OMITTED. That omission IS
-    # the trash gate. The `trash-writable` preset (see
-    # meet_a_claw/policies/trash-writable.yaml) adds the path back when
-    # explicitly applied.
 
 # TODO: evaluate landlock enforce mode — currently best_effort because
 # enforce can break things in unpredictable ways. Needs thorough testing
