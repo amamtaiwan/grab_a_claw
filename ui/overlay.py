@@ -311,7 +311,6 @@ def main() -> int:
         "",
         font_name="Sans", font_size=11, color=(40, 30, 20, 230),
         x=0, y=0, anchor_x="center", anchor_y="bottom",
-        bold=True,
     )
     carry_bg = shapes.Rectangle(
         x=0, y=0, width=10, height=10,
