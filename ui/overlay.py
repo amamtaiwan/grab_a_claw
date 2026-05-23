@@ -305,10 +305,9 @@ def main() -> int:
     gate_state = GateState()
     gate_observer = start_gate_watcher(gate_state)
 
-    # Carried-file visual: a small white "page" icon (rectangle + folded
-    # corner accent) sitting above-right of the lobster, plus a text
-    # label with the filename. System fonts on this box don't ship color
-    # emoji, so we draw the icon ourselves instead of relying on 📄.
+    # Carried-file visual: a single page rectangle + text label above.
+    # System fonts on this box don't ship color emoji, so we draw the
+    # icon ourselves instead of relying on 📄.
     carry_label = pyglet.text.Label(
         "",
         font_name="Sans", font_size=11, color=(40, 30, 20, 230),
@@ -319,21 +318,10 @@ def main() -> int:
         color=(255, 255, 255),
     )
     carry_bg.opacity = 230
-    # The "page" — a small rectangle. We draw a darker accent triangle
-    # in the top-right to suggest a folded corner.
     carry_page = shapes.Rectangle(
-        x=0, y=0, width=18, height=22,
+        x=0, y=0, width=20, height=24,
         color=(245, 240, 220),
     )
-    carry_page_corner = shapes.Triangle(
-        0, 0, 0, 0, 0, 0,
-        color=(200, 195, 175),
-    )
-    carry_page_border = shapes.Rectangle(
-        x=0, y=0, width=18, height=22,
-        color=(120, 100, 60),
-    )
-    carry_page_border.opacity = 80
 
     # Default file to pick up on P. In B5 this will come from a real
     # desktop-scan call into the sandbox.
@@ -372,8 +360,12 @@ def main() -> int:
         sx, sy = lobster.sprite.x, lobster.sprite.y
         offset_x = 26
         offset_y = SPRITE_PX / 2 + 4
+        # Page icon sits just above the sprite.
+        carry_page.x = sx + offset_x - 10  # center 20-wide page on offset_x
+        carry_page.y = sy + offset_y
+        # Text label above the page.
         carry_label.x = sx + offset_x
-        carry_label.y = sy + offset_y + 26  # text sits above the page icon
+        carry_label.y = sy + offset_y + 28
         # Background pill behind label.
         text_w = carry_label.content_width + 14
         text_h = carry_label.content_height + 4
@@ -381,23 +373,6 @@ def main() -> int:
         carry_bg.y = carry_label.y - 2
         carry_bg.width = text_w
         carry_bg.height = text_h
-        # Page icon sits between the lobster and the label.
-        page_x = sx + offset_x - 9   # center the 18-wide page on offset_x
-        page_y = sy + offset_y + 2
-        carry_page_border.x = page_x - 1
-        carry_page_border.y = page_y - 1
-        carry_page_border.width = 20
-        carry_page_border.height = 24
-        carry_page.x = page_x
-        carry_page.y = page_y
-        # Folded corner: a small triangle in the top-right of the page.
-        corner = 6
-        carry_page_corner.x1 = page_x + 18 - corner
-        carry_page_corner.y1 = page_y + 22
-        carry_page_corner.x2 = page_x + 18
-        carry_page_corner.y2 = page_y + 22
-        carry_page_corner.x3 = page_x + 18
-        carry_page_corner.y3 = page_y + 22 - corner
 
     @window.event
     def on_draw():
@@ -407,9 +382,7 @@ def main() -> int:
         lobster.sprite.draw()
         if lobster.carried_file is not None:
             position_carry()
-            carry_page_border.draw()
             carry_page.draw()
-            carry_page_corner.draw()
             carry_bg.draw()
             carry_label.draw()
         instr.draw()
