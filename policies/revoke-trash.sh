@@ -23,4 +23,7 @@ echo "[revoke-trash] removing marker /sandbox/.openclaw/trash-approved"
 echo "[revoke-trash] removing NemoClaw preset (audit signal)"
 "$NEMOCLAW" "$SANDBOX" policy-remove trash-writable --yes 2>&1 | tail -8 || true
 
+echo "[revoke-trash] writing host-side gate state for the overlay"
+echo "closed" > /tmp/meet_a_claw-gate-state
+
 echo "[revoke-trash] gate is CLOSED. Grant with: ./policies/grant-trash.sh $SANDBOX"

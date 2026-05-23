@@ -1,16 +1,29 @@
 """
-meet_a_claw overlay — B3 walk animation.
+meet_a_claw overlay — B3 walk + B6 gate state + bounce.
 
-State machine:
-    IDLE       — sprite static at current position
-    WALKING    — interpolating from (x0,y0) → target over `walk_duration`
-                 seconds, with a small vertical "bob" so it looks like
-                 footsteps. Snaps back to IDLE when arrived.
+Visuals:
+    - Lobster sprite walks between HOME and TRASH_ZONE.
+    - A vertical "gate" bar sits between the lobster and the trash zone.
+      Color tracks /tmp/meet_a_claw-gate-state:
+        contains "open"   → green   (policies/grant-trash.sh just ran)
+        contains "closed" → red     (policies/revoke-trash.sh just ran)
+        missing           → red     (default; gate is closed)
+    - Bounce animation: lobster lerps backward 80 px and snaps back, with
+      a small angular wobble. Use this when the agent's trash attempt was
+      refused by the policy / marker check.
 
-Controls (for solo testing before B5 WebSocket wiring lands):
-    SPACE      — walk to the demo trash zone (right of screen)
-    R          — walk back to home (top-left)
-    ESC        — quit
+Controls (operator-driven during demo):
+    SPACE  walk to trash zone
+    R      walk back home
+    B      trigger bounce animation
+    ESC    quit
+
+Wiring:
+    - The host-side gate state file is the bridge between
+      ./policies/{grant,revoke}-trash.sh and this overlay. Filesystem
+      event watcher refreshes the visual immediately on change.
+    - In a later iteration (Phase 4 B5), agent-driven walk commands will
+      come via a WebSocket; for now keypresses are the script.
 
 Run:
     cd /media/ufoai/DATAs3/fromtrx51/workspace/meet_a_claw/ui
@@ -21,78 +34,104 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass, field
+import threading
+import time
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 import pyglet
+from pyglet import shapes
 from pyglet.window import Window, key
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 HERE = Path(__file__).resolve().parent
 SPRITE_PATH = HERE / "assets" / "sprites" / "lobster_72.png"
+GATE_STATE_FILE = Path("/tmp/meet_a_claw-gate-state")
+
 SPRITE_SCALE = 2.0
 SPRITE_PX = int(72 * SPRITE_SCALE)
 
-# The overlay window has to be big enough to cover the lobster's entire
-# trajectory because we draw inside a single window (pyglet doesn't have a
-# native "draw on the actual desktop" surface). We size it to most of the
-# screen and let the empty cream area double as a stage. B7 will replace
-# the cream fill with transparency so the desktop wallpaper shows through.
 STAGE_W = 1400
 STAGE_H = 240
-WALK_DURATION_S = 1.8    # seconds end-to-end
-WALK_BOB_HEIGHT = 8      # vertical pixels of bobbing during walk
-WALK_BOB_FREQ_HZ = 6     # steps per second visual rate
 
-HOME_POS = (60, 80)      # top-left start
-TRASH_ZONE_X = STAGE_W * 0.78  # roughly where a "trash can" would sit
-TRASH_ZONE_POS = (TRASH_ZONE_X, 80)
+WALK_DURATION_S = 1.8
+WALK_BOB_HEIGHT = 8
+WALK_BOB_FREQ_HZ = 6
+
+BOUNCE_DURATION_S = 0.55
+BOUNCE_RECOIL_PX = 80
+BOUNCE_WOBBLE_DEG = 18
+
+HOME_POS = (60, 100)
+TRASH_ZONE_X = STAGE_W * 0.82
+TRASH_ZONE_POS = (TRASH_ZONE_X, 100)
+GATE_X = STAGE_W * 0.72  # gate stands between lobster path and trash
+GATE_WIDTH = 14
+GATE_HEIGHT = 160
+GATE_Y = (STAGE_H - GATE_HEIGHT) / 2
+
+GATE_COLOR_CLOSED = (220, 60, 60)
+GATE_COLOR_OPEN = (80, 200, 120)
 
 
 class LobsterState(Enum):
     IDLE = "idle"
     WALKING = "walking"
+    BOUNCING = "bouncing"
 
 
 @dataclass
 class Lobster:
     sprite: pyglet.sprite.Sprite
+
     state: LobsterState = LobsterState.IDLE
+
     walk_origin: tuple[float, float] = (0.0, 0.0)
     walk_target: tuple[float, float] = (0.0, 0.0)
     walk_elapsed: float = 0.0
     walk_duration: float = WALK_DURATION_S
-    base_y: float = 0.0  # y while idle (no bob)
+    base_y: float = 0.0
+
+    bounce_origin_x: float = 0.0
+    bounce_elapsed: float = 0.0
 
     def walk_to(self, target: tuple[float, float]) -> None:
         if self.state == LobsterState.WALKING:
-            # Re-target from current position so a mid-walk keypress
-            # produces a smooth course-correct rather than a teleport.
             self.walk_origin = (self.sprite.x, self.base_y)
         else:
             self.walk_origin = (self.sprite.x, self.sprite.y)
         self.walk_target = target
         self.walk_elapsed = 0.0
-        self.state = LobsterState.WALKING
         self.base_y = self.walk_origin[1]
+        self.sprite.rotation = 0
+        self.state = LobsterState.WALKING
+
+    def bounce(self) -> None:
+        if self.state == LobsterState.BOUNCING:
+            return
+        self.bounce_origin_x = self.sprite.x
+        self.bounce_elapsed = 0.0
+        self.state = LobsterState.BOUNCING
 
     def update(self, dt: float) -> None:
-        if self.state != LobsterState.WALKING:
-            return
+        if self.state == LobsterState.WALKING:
+            self._step_walk(dt)
+        elif self.state == LobsterState.BOUNCING:
+            self._step_bounce(dt)
+
+    def _step_walk(self, dt: float) -> None:
         self.walk_elapsed += dt
         t = min(1.0, self.walk_elapsed / self.walk_duration)
-        # Ease-in-out so the lobster starts and stops gently.
         eased = 0.5 - 0.5 * math.cos(math.pi * t)
         x = self.walk_origin[0] + (self.walk_target[0] - self.walk_origin[0]) * eased
         y = self.walk_origin[1] + (self.walk_target[1] - self.walk_origin[1]) * eased
-        # Footstep bob: a sinusoid that only kicks in mid-walk so the
-        # arrival is steady (no jitter on the last frame).
         in_motion = 1.0 if 0.05 < t < 0.95 else 0.0
         bob = math.sin(self.walk_elapsed * WALK_BOB_FREQ_HZ * 2 * math.pi) * WALK_BOB_HEIGHT * in_motion
         self.sprite.x = x
         self.sprite.y = y + bob
         self.base_y = y
-        # Face the direction of travel.
         dx = self.walk_target[0] - self.walk_origin[0]
         if dx > 0:
             self.sprite.scale_x = abs(self.sprite.scale_x)
@@ -101,6 +140,87 @@ class Lobster:
         if t >= 1.0:
             self.state = LobsterState.IDLE
             self.sprite.y = self.walk_target[1]
+
+    def _step_bounce(self, dt: float) -> None:
+        self.bounce_elapsed += dt
+        t = min(1.0, self.bounce_elapsed / BOUNCE_DURATION_S)
+        # Recoil out and back: a half-sine.
+        recoil = math.sin(t * math.pi) * BOUNCE_RECOIL_PX
+        # Direction depends on which way the lobster is facing.
+        facing_right = self.sprite.scale_x >= 0
+        self.sprite.x = self.bounce_origin_x + (-recoil if facing_right else recoil)
+        # Angular wobble: starts at 0, peaks mid-bounce, returns.
+        self.sprite.rotation = math.sin(t * math.pi) * BOUNCE_WOBBLE_DEG * (1 if facing_right else -1)
+        if t >= 1.0:
+            self.state = LobsterState.IDLE
+            self.sprite.x = self.bounce_origin_x
+            self.sprite.rotation = 0
+
+
+# ── gate state subscriber ──────────────────────────────────────────────
+
+
+class GateState:
+    """Thread-safe holder for whether the trash gate is currently open."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._open = self._read_initial()
+        self._dirty = True  # force first render
+
+    @staticmethod
+    def _read_initial() -> bool:
+        try:
+            return GATE_STATE_FILE.read_text().strip() == "open"
+        except FileNotFoundError:
+            return False
+
+    def set_from_file(self) -> None:
+        try:
+            new = GATE_STATE_FILE.read_text().strip() == "open"
+        except FileNotFoundError:
+            new = False
+        with self._lock:
+            if new != self._open:
+                self._open = new
+                self._dirty = True
+
+    def consume_change(self) -> bool | None:
+        """Returns the new state if it changed since last consume, else None."""
+        with self._lock:
+            if self._dirty:
+                self._dirty = False
+                return self._open
+            return None
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            return self._open
+
+
+class _GateFileHandler(FileSystemEventHandler):
+    def __init__(self, state: GateState) -> None:
+        self.state = state
+
+    def on_any_event(self, event):  # noqa: D401
+        if event.is_directory:
+            return
+        if Path(event.src_path) == GATE_STATE_FILE:
+            self.state.set_from_file()
+
+
+def start_gate_watcher(state: GateState) -> Observer:
+    handler = _GateFileHandler(state)
+    observer = Observer()
+    # Watch the parent dir so we catch creation events too.
+    observer.schedule(handler, str(GATE_STATE_FILE.parent), recursive=False)
+    observer.daemon = True
+    observer.start()
+    return observer
+
+
+# ── pyglet plumbing ────────────────────────────────────────────────────
 
 
 def make_window() -> Window:
@@ -122,7 +242,6 @@ def make_window() -> Window:
             caption="meet_a_claw",
             resizable=False,
         )
-    # Anchor top-left of screen with a tiny gap.
     window.set_location(40, 40)
     return window
 
@@ -141,19 +260,41 @@ def main() -> int:
 
     lobster = Lobster(sprite=sprite, base_y=HOME_POS[1])
 
+    gate_state = GateState()
+    gate_observer = start_gate_watcher(gate_state)
+
+    initial_color = GATE_COLOR_OPEN if gate_state.is_open else GATE_COLOR_CLOSED
+    gate_shape = shapes.Rectangle(
+        x=GATE_X, y=GATE_Y, width=GATE_WIDTH, height=GATE_HEIGHT,
+        color=initial_color,
+    )
+
     pyglet.gl.glClearColor(1.0, 0.97, 0.91, 1.0)
     instr = pyglet.text.Label(
-        "SPACE: walk to trash zone   R: walk home   ESC: quit",
-        font_name="Sans",
-        font_size=11,
-        color=(80, 60, 40, 200),
-        x=12,
-        y=STAGE_H - 18,
+        "SPACE: walk to trash   R: walk home   B: bounce   ESC: quit",
+        font_name="Sans", font_size=11, color=(80, 60, 40, 200),
+        x=12, y=STAGE_H - 18,
     )
+    gate_label = pyglet.text.Label(
+        "gate: CLOSED", font_name="Sans", font_size=11, color=(80, 60, 40, 200),
+        x=GATE_X - 110, y=GATE_Y + GATE_HEIGHT + 8,
+    )
+
+    def refresh_gate_label_and_color() -> None:
+        if gate_state.is_open:
+            gate_shape.color = GATE_COLOR_OPEN
+            gate_label.text = "gate: OPEN"
+        else:
+            gate_shape.color = GATE_COLOR_CLOSED
+            gate_label.text = "gate: CLOSED"
+
+    refresh_gate_label_and_color()
 
     @window.event
     def on_draw():
         window.clear()
+        gate_shape.draw()
+        gate_label.draw()
         lobster.sprite.draw()
         instr.draw()
 
@@ -165,13 +306,24 @@ def main() -> int:
             lobster.walk_to(TRASH_ZONE_POS)
         elif symbol == key.R:
             lobster.walk_to(HOME_POS)
+        elif symbol == key.B:
+            lobster.bounce()
 
     def tick(dt: float):
+        new_state = gate_state.consume_change()
+        if new_state is not None:
+            refresh_gate_label_and_color()
         lobster.update(dt)
 
     pyglet.clock.schedule_interval(tick, 1 / 60)
-    print("meet_a_claw overlay — B3 walk animation. SPACE/R/ESC.")
-    pyglet.app.run()
+    print("meet_a_claw overlay — B3 walk + B6 gate watcher.")
+    print(f"  watching: {GATE_STATE_FILE}")
+    print("  SPACE/R/B/ESC, or grant-trash.sh / revoke-trash.sh to toggle gate.")
+    try:
+        pyglet.app.run()
+    finally:
+        gate_observer.stop()
+        gate_observer.join(timeout=2.0)
     return 0
 
 

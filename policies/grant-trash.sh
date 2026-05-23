@@ -28,4 +28,7 @@ echo "[grant-trash] touching marker /sandbox/.openclaw/trash-approved"
 echo "[grant-trash] applying NemoClaw preset (audit signal only — filesystem grants are baked at sandbox create time)"
 "$NEMOCLAW" "$SANDBOX" policy-add --from-file "$REPO_DIR/policies/trash-writable.yaml" --yes 2>&1 | tail -8 || true
 
+echo "[grant-trash] writing host-side gate state for the overlay"
+echo "open" > /tmp/meet_a_claw-gate-state
+
 echo "[grant-trash] gate is OPEN. Revoke with: ./policies/revoke-trash.sh $SANDBOX"
