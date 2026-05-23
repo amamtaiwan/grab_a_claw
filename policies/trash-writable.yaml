@@ -1,0 +1,24 @@
+# Trash-writable preset — opens the trash gate.
+#
+# Apply with:   nemoclaw hack-agent policy-add --from-file ./policies/trash-writable.yaml --yes
+# Remove with:  nemoclaw hack-agent policy-remove trash-writable
+# Verify with:  openshell policy get hack-agent --full
+#
+# This preset adds /sandbox/demo/trash to filesystem_policy.read_write. With it
+# applied, the agent's desktop-trash skill can complete `mv` operations into
+# the trash. Without it, Landlock denies those writes at the kernel level and
+# the skill returns a structured "denied" result that the animation layer
+# renders as the lobster bouncing off a glowing gate.
+#
+# Granting this preset is meant to be a deliberate, audited act — the
+# operator types the command, OpenShell logs the policy revision, and the
+# gate visual flips to "open" via the OCSF audit log subscriber in
+# ui/overlay.py.
+
+preset:
+  name: trash-writable
+  description: "Open the trash gate — allows the meet_a_claw agent to move files into /sandbox/demo/trash. Default deny is restored when this preset is removed."
+
+filesystem_policy:
+  read_write:
+    - /sandbox/demo/trash
