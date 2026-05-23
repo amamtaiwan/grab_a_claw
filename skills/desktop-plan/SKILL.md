@@ -18,7 +18,7 @@ Apply top-to-bottom; first match wins.
 
 | Category from scan | Decision | Target directory |
 |---|---|---|
-| `trash-candidate` | `trash` | `/opt/agent-trash/` |
+| `trash-candidate` | `trash` | `/sandbox/.openclaw/trash/` |
 | `image` | `move` | `/sandbox/demo/sorted/images/` |
 | `document` | `move` | `/sandbox/demo/sorted/documents/` |
 | `spreadsheet` | `move` | `/sandbox/demo/sorted/documents/` |
@@ -40,7 +40,7 @@ Return ONLY a JSON array, no prose, no markdown fences:
 
 ```json
 [
-  {"file": "old_disk.iso", "action": "trash",      "from": "/sandbox/demo/desktop/old_disk.iso", "to": "/opt/agent-trash/old_disk.iso", "reason": "trash-candidate (>90d old)"},
+  {"file": "old_disk.iso", "action": "trash",      "from": "/sandbox/demo/desktop/old_disk.iso", "to": "/sandbox/.openclaw/trash/old_disk.iso", "reason": "trash-candidate (>90d old)"},
   {"file": "draft.pdf",    "action": "move",       "from": "/sandbox/demo/desktop/draft.pdf",    "to": "/sandbox/demo/sorted/documents/draft.pdf", "reason": "document"},
   {"file": "weird.xyz",    "action": "leave_alone","from": "/sandbox/demo/desktop/weird.xyz",    "to": null, "reason": "unknown type — letting human decide"}
 ]

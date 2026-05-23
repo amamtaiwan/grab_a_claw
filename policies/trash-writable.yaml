@@ -28,3 +28,23 @@ preset:
 filesystem_policy:
   read_write:
     - /opt/agent-trash
+
+# NemoClaw's preset loader requires `network_policies` to contain at least
+# one entry, even when the preset only intends to change filesystem rules.
+# This dummy entry whitelists a single localhost port that no service uses
+# (32767), bound to a binary path the agent never invokes. The OCSF audit
+# log will, however, show a NET preset event when this rule is loaded —
+# the animation layer can subscribe to that event as "gate just opened" and
+# the inverse on removal.
+network_policies:
+  trash_writable_marker:
+    name: trash_writable_marker
+    endpoints:
+      - host: 127.0.0.1
+        port: 32767
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: "/gate-open" }
+    binaries:
+      - { path: /usr/local/bin/openclaw }
