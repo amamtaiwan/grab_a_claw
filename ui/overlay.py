@@ -33,6 +33,7 @@ Run:
 from __future__ import annotations
 
 import math
+import subprocess
 import sys
 import threading
 import time
@@ -47,6 +48,9 @@ from watchdog.events import FileSystemEventHandler
 # PollingObserver avoids inotify so we keep working on machines where
 # fs.inotify.max_user_watches is already saturated by IDEs / dev tools.
 from watchdog.observers.polling import PollingObserver as Observer
+
+SANDBOX_NAME = "hack-agent"
+SANDBOX_DESKTOP_PATH = "/sandbox/demo/desktop"
 
 HERE = Path(__file__).resolve().parent
 SPRITE_PATH = HERE / "assets" / "sprites" / "lobster_72.png"
@@ -239,6 +243,40 @@ class GateState:
             return self._open
 
 
+# ── desktop file list from sandbox ─────────────────────────────────────
+
+
+def _find_sandbox_container() -> str | None:
+    """Locate the openshell-hack-agent container by name pattern."""
+    try:
+        out = subprocess.check_output(
+            ["docker", "ps", "--filter", f"name=openshell-{SANDBOX_NAME}",
+             "--format", "{{.Names}}"],
+            text=True, timeout=5,
+        ).strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if not out:
+        return None
+    return out.splitlines()[0]
+
+
+def list_sandbox_desktop() -> list[str]:
+    """Snapshot the agent's demo desktop directory. Empty on failure."""
+    container = _find_sandbox_container()
+    if not container:
+        return []
+    try:
+        out = subprocess.check_output(
+            ["docker", "exec", "--user", "sandbox", container,
+             "ls", "-1", SANDBOX_DESKTOP_PATH],
+            text=True, timeout=5, stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 class _GateFileHandler(FileSystemEventHandler):
     def __init__(self, state: GateState) -> None:
         self.state = state
@@ -323,9 +361,11 @@ def main() -> int:
         color=(245, 240, 220),
     )
 
-    # Default file to pick up on P. In B5 this will come from a real
-    # desktop-scan call into the sandbox.
-    DEFAULT_PICKUP = "old_disk.iso"
+    # Real file list from the sandbox. Each pickup pops one off; D drops
+    # back to the front; reaching the trash zone with a file = permanent
+    # removal (the actual sandbox-side mv is the agent's job, not ours).
+    available_files: list[str] = list_sandbox_desktop()
+    print(f"  desktop snapshot: {len(available_files)} file(s) — {available_files!r}")
 
     initial_color = GATE_COLOR_OPEN if gate_state.is_open else GATE_COLOR_CLOSED
     gate_shape = shapes.Rectangle(
@@ -335,10 +375,18 @@ def main() -> int:
 
     pyglet.gl.glClearColor(1.0, 0.97, 0.91, 1.0)
     instr = pyglet.text.Label(
-        "SPACE: walk to trash   R: walk home   B: bounce   P: pick up   D: drop   ESC: quit",
+        "SPACE: walk to trash   R: home   B: bounce   P: pick up   D: drop   F: refresh   ESC: quit",
         font_name="Sans", font_size=11, color=(80, 60, 40, 200),
         x=12, y=STAGE_H - 18,
     )
+    desktop_label = pyglet.text.Label(
+        text=f"desktop: {len(available_files)} file(s)",
+        font_name="Sans", font_size=11, color=(80, 60, 40, 200),
+        x=12, y=STAGE_H - 38,
+    )
+
+    def refresh_desktop_label() -> None:
+        desktop_label.text = f"desktop: {len(available_files)} file(s)"
     gate_label = pyglet.text.Label(
         "gate: CLOSED", font_name="Sans", font_size=11, color=(80, 60, 40, 200),
         x=GATE_X - 110, y=GATE_Y + GATE_HEIGHT + 8,
@@ -386,6 +434,7 @@ def main() -> int:
             carry_bg.draw()
             carry_label.draw()
         instr.draw()
+        desktop_label.draw()
 
     @window.event
     def on_key_press(symbol, modifiers):
@@ -398,11 +447,25 @@ def main() -> int:
         elif symbol == key.B:
             lobster.bounce()
         elif symbol == key.P:
-            if lobster.carried_file is None:
-                lobster.pickup(DEFAULT_PICKUP)
-                carry_label.text = DEFAULT_PICKUP
+            if lobster.carried_file is None and available_files:
+                picked = available_files.pop(0)
+                lobster.pickup(picked)
+                carry_label.text = picked
+                refresh_desktop_label()
         elif symbol == key.D:
-            lobster.drop()
+            if lobster.carried_file is not None:
+                # Put back at the front of the list (will be picked up
+                # again on next P).
+                available_files.insert(0, lobster.carried_file)
+                lobster.drop()
+                refresh_desktop_label()
+        elif symbol == key.F:
+            # Refresh the desktop snapshot from sandbox.
+            new_list = list_sandbox_desktop()
+            available_files.clear()
+            available_files.extend(new_list)
+            refresh_desktop_label()
+            print(f"  refreshed: {len(available_files)} file(s) — {available_files!r}")
 
     def tick(dt: float):
         new_state = gate_state.consume_change()
