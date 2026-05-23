@@ -1,0 +1,8 @@
+# Skills go here, each as its own subdirectory.
+# Phase 4 plan:
+#   - scan_desktop/      list & classify files on ~/Desktop
+#   - propose_plan/      ask Nemotron where each file should go
+#   - move_file/         perform a move (subject to filesystem policy)
+#   - request_trash/     ask to delete — the gate target
+#
+# Create with: nemoclaw hack-agent skill install ./skills/<name>

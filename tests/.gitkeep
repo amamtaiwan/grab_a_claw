@@ -1,0 +1,6 @@
+# Working-code tests — judges value these heavily.
+# Phase 4+5 plan:
+#   - test_skills_smoke.py        each skill runs cleanly in isolation
+#   - test_policy_allowed.py      legitimate moves succeed
+#   - test_policy_denied.py       trash + SSH attempts get EACCES
+#   - test_audit_log_emits.py     every decision lands in OCSF log

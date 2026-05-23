@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# Node / UI
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+
+# Secrets / local env
+.env
+.env.local
+*.token
+*.secret
+
+# Runtime data (the lobster's brain)
+data/
+*.db
+*.db-journal
+*.sqlite
+runs.db
+
+# Logs
+*.log
+nemoclaw-install.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Dashboard tokens — NEVER commit these
+dashboard-url.txt
+*.dashboard.txt

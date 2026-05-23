@@ -1,0 +1,31 @@
+# meet_a_claw network guardrails
+#
+# Applied via:  nemoclaw hack-agent policy-add --from-file ./network.yaml
+# Verified via: nemoclaw hack-agent status   (look under `Policy → network_policies`)
+#
+# Philosophy:
+#   - Inherit the "Restricted" + `local-inference` defaults NemoClaw installed
+#   - Add NOTHING by default — the cleanup agent does not need outside-world access
+#   - When Phase 5 demo adds Telegram alerts (optional), append a `telegram` block
+#     pointing only at api.telegram.org, methods POST sendMessage / GET getMe.
+
+network_policies:
+  # Intentionally empty — we explicitly RELY on NemoClaw's default `local_inference`
+  # preset (it allows host.openshell.internal:11434/11435/8000 for the Nemotron
+  # route) and nothing else. Any outbound the agent attempts beyond that should
+  # show up in the OCSF audit log as NET:DENY — that's the network half of the
+  # guardrail demo.
+
+  # TODO (Phase 5, optional): if we choose to push alerts to Telegram, add:
+  # telegram_alerts:
+  #   name: telegram_alerts
+  #   endpoints:
+  #   - host: api.telegram.org
+  #     port: 443
+  #     protocol: rest
+  #     enforcement: enforce
+  #     rules:
+  #     - allow: { method: POST, path: '/bot*/sendMessage' }
+  #     - allow: { method: GET,  path: '/bot*/getMe' }
+  #   binaries:
+  #   - path: /usr/local/bin/openclaw

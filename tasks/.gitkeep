@@ -1,0 +1,4 @@
+# Autonomous task definitions for OpenClaw's Taskflow.
+# Phase 4 plan:
+#   - self_check.yaml      stack health + disk-pressure trigger
+#   - desktop_watch.yaml   re-organize when ~/Desktop gets cluttered

@@ -1,0 +1,2 @@
+# Animated mascot lives here. Tech TBD (see ../docs/ARCHITECTURE.md D1).
+# Subscribes to: agent → animation events (D2)  AND  OCSF audit log (for gate reactions).

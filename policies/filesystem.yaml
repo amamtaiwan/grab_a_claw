@@ -1,0 +1,36 @@
+# meet_a_claw filesystem guardrails
+#
+# Applied via:  nemoclaw hack-agent policy-add --from-file ./filesystem.yaml
+# Verified via: nemoclaw hack-agent status   (look under `Policy → filesystem_policy`)
+#
+# Philosophy:
+#   - Start from the NemoClaw "Restricted" baseline (deny outside sandbox by default)
+#   - Add ONLY the paths the cleanup agent legitimately needs
+#   - Deliberately exclude ~/.local/share/Trash — that's the gate
+
+filesystem_policy:
+  read_only:
+    # The Desktop is read-only by default; only after the agent gets a "plan
+    # approved" event from the user does it elevate to read_write below.
+    # TODO: confirm this matches what the agent actually needs.
+    - /home/ufoai/Desktop
+
+  read_write:
+    # Staging area the agent can shuffle files through, e.g. /tmp/claw-staging/
+    - /tmp/claw-staging
+    # Project workspace — for skills to read their own config + write run state
+    - /sandbox/.openclaw
+    - /sandbox/.nemoclaw
+
+  # PATHS DELIBERATELY NOT GRANTED — these are the gates:
+  # - /home/ufoai/.local/share/Trash    # the trash gate (Phase 5 demo)
+  # - /home/ufoai/.ssh                  # never, the canonical "obvious-bad" test
+  # - /home/ufoai/.config               # the agent has no business in here
+
+landlock:
+  # best_effort: degrade gracefully on older kernels rather than refusing to start
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
