@@ -117,13 +117,13 @@ class Lobster:
         self.bounce_elapsed = 0.0
         self.state = LobsterState.BOUNCING
 
-    def update(self, dt: float) -> None:
+    def update(self, dt: float, gate_open: bool) -> None:
         if self.state == LobsterState.WALKING:
-            self._step_walk(dt)
+            self._step_walk(dt, gate_open)
         elif self.state == LobsterState.BOUNCING:
             self._step_bounce(dt)
 
-    def _step_walk(self, dt: float) -> None:
+    def _step_walk(self, dt: float, gate_open: bool) -> None:
         self.walk_elapsed += dt
         t = min(1.0, self.walk_elapsed / self.walk_duration)
         eased = 0.5 - 0.5 * math.cos(math.pi * t)
@@ -139,6 +139,24 @@ class Lobster:
             self.sprite.scale_x = abs(self.sprite.scale_x)
         elif dx < 0:
             self.sprite.scale_x = -abs(self.sprite.scale_x)
+
+        # Collision with closed gate. Lobster's right edge reaches the
+        # gate's left edge while walking rightward and the gate is shut →
+        # cancel the walk and start a bounce. Walking leftward (return
+        # home) or with the gate open passes through normally.
+        going_right = dx > 0
+        right_edge = self.sprite.x + (SPRITE_PX / 2)
+        if (
+            going_right
+            and not gate_open
+            and right_edge >= GATE_X
+            and self.walk_target[0] > GATE_X  # only intercept if target is past the gate
+        ):
+            self.sprite.x = GATE_X - (SPRITE_PX / 2) - 4  # park just before the gate
+            self.sprite.y = self.base_y
+            self.bounce()
+            return
+
         if t >= 1.0:
             self.state = LobsterState.IDLE
             self.sprite.y = self.walk_target[1]
@@ -317,7 +335,7 @@ def main() -> int:
         new_state = gate_state.consume_change()
         if new_state is not None:
             refresh_gate_label_and_color()
-        lobster.update(dt)
+        lobster.update(dt, gate_open=gate_state.is_open)
 
     pyglet.clock.schedule_interval(tick, 1 / 60)
     print("meet_a_claw overlay — B3 walk + B6 gate watcher.")
