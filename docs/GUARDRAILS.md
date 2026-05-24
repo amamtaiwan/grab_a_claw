@@ -13,16 +13,19 @@ cd /media/ufoai/DATAs3/fromtrx51/workspace/meet_a_claw
 ```
 
 That command:
-1. Deploys `sandbox-bin/tidy.sh` into the running sandbox at `/sandbox/.openclaw/bin/tidy.sh`.
-2. Replants `/sandbox/demo/desktop/` with a known 7 files (mixed types and mtimes; 4 will be classified as trash-candidate).
-3. Revokes the trash gate (marker removed, NemoClaw preset removed, host-side state file set to `closed`).
-4. Warms the model in VRAM with a PONG ping so the first dashboard turn doesn't pay a cold-load.
-5. Prints the dashboard URL with a fresh gateway token, plus the on-screen cheat sheet.
+1. Sweeps any leftover demo-file names out of `~/Pictures`, `~/Documents`, `~/Downloads`, `~/Videos`, `~/Documents/code` (only file names we plant — never touches the user's real files).
+2. Replants `~/Desktop/meet_a_claw-demo/` with a known 7 files on the **host** desktop.
+3. Replants `/sandbox/demo/desktop/` with the same 7 files inside the sandbox.
+4. Deploys `sandbox-bin/tidy.sh` into the sandbox at `/sandbox/.openclaw/bin/tidy.sh`.
+5. Revokes the trash gate (marker removed, NemoClaw preset removed, host-side state file set to `closed`).
+6. Warms the model in VRAM with a PONG ping so the first dashboard turn doesn't pay a cold-load.
+7. Prints the dashboard URL with a fresh gateway token, plus the on-screen cheat sheet.
 
 Open in parallel:
 - **Browser**: paste the dashboard URL (token embedded).
-- **Terminal A** (this one): kept for `./policies/grant-trash.sh`.
-- **Terminal B**: `cd ui && .venv/bin/python overlay.py` — the lobster + gate visual.
+- **Files browser** (e.g. `nautilus ~/Desktop/meet_a_claw-demo`) — so the audience sees the host folder drain in real time as the sandbox tidies.
+- **Overlay terminal**: `cd ui && .venv/bin/python overlay.py` — lobster + the clickable gate.
+- **Operator terminal** (this one): kept for recovery only; the demo itself drives via the dashboard + a click on the gate.
 
 ## Demo — 3 beats, ~90 seconds
 
@@ -39,39 +42,39 @@ What the agent does (live, you can show the tool calls panel):
 
 What the audience sees:
 
-```
-## Tidied /sandbox/demo/desktop — 7 files reviewed
+- **Dashboard** prints the Markdown:
 
-### Moved (3)
-  - draft.pdf -> sorted/documents/
-  - screenshot_2026-05-20.png -> sorted/images/
-  - tax_receipts_2024.zip -> sorted/archives/
+  ```
+  ## Tidied /sandbox/demo/desktop — 7 files reviewed
 
-### Trash denied by policy (4)
-Trash gate is closed. Operator can open it with: ./policies/grant-trash.sh hack-agent
-  - old_disk.iso
-  - random.log
-  - temp_notes.tmp
-  - empty_file.txt
-```
+  ### Moved (3)
+    - draft.pdf -> sorted/documents/
+    - screenshot_2026-05-20.png -> sorted/images/
+    - tax_receipts_2024.zip -> sorted/archives/
+
+  ### Trash denied by policy (4)
+  Trash gate is closed. Operator can open it with: ./policies/grant-trash.sh hack-agent
+    - old_disk.iso
+    - random.log
+    - temp_notes.tmp
+    - empty_file.txt
+  ```
+
+- **Files browser** showing `~/Desktop/meet_a_claw-demo/`: within ~2 s of the Markdown landing, three files vanish from the host folder and appear in `~/Pictures`, `~/Documents`, `~/Downloads`. The remaining four trash candidates stay put. The overlay's top-right label briefly shows each `mirror: <file> → moved → Pictures/` etc.
 
 Narration:
-> "The agent classified seven files and acted on each. Three got moved into the right sorted bins. The four trash candidates — that's where things get interesting. Look at the response: the policy denied them. The agent didn't try to work around it; it reported the denial and told me how to authorize it. **That's the bonus track**: NemoClaw's app-layer gate stopping a destructive operation cold."
+> "The agent classified seven files and acted on each. Three were moved into the right host folders — that's not a fake animation, that's `gio mv` on real files; you're watching the host desktop. The four trash candidates? Notice the dashboard says **denied by policy**. The agent didn't escape, didn't retry, didn't 'figure out a workaround.' It reported what happened and what would unblock it."
 
 ### Beat 2 — operator opens the gate (target 5 s)
 
-In Terminal A:
-
-```bash
-./policies/grant-trash.sh hack-agent
-```
+**Click the red gate in the overlay window.** It instantly turns **amber** with the label `gate: OPENING…` so the audience knows the click registered. Two to five seconds later — after the underlying `grant-trash.sh` finishes touching the in-sandbox marker and applying the NemoClaw preset — it settles **green** with `gate: OPEN (click to close)`.
 
 What the audience sees:
-- Terminal: marker touched, NemoClaw preset applied, policy version bumps, "Widening sandbox egress" log line, `[grant-trash] gate is OPEN`.
-- **Overlay window**: the gate bar flips from RED to GREEN, label changes from `gate: CLOSED` to `gate: OPEN`.
+- **Overlay**: red → amber → green. Three discrete colors mean three discrete states; no guessing.
+- **Operator terminal** (if visible): no typing; the click is the whole gesture.
 
 Narration:
-> "I explicitly grant the trash-writable preset. Two audit signals fire — the sandbox-internal consent marker and a NemoClaw policy version event. The overlay reads the host-side state file and flips the visual immediately."
+> "One click on the gate. Amber means the policy update is in flight — sandbox-internal marker plus a NemoClaw preset change. Green means it settled. From here on, the agent is allowed to write into the trash path."
 
 ### Beat 3 — agent retries, succeeds (target 30–40 s)
 
@@ -91,25 +94,27 @@ What the audience sees:
   - empty_file.txt
 ```
 
+And, in their **Files browser** showing `~/Desktop/meet_a_claw-demo/`, the four files **disappear in real time** (`gio trash` puts them in the system trash bin). The overlay's top-right label flickers `mirror: old_disk.iso → trashed (gio)` etc. as each one fires.
+
 Narration:
-> "Same script, same four candidates, but this time the marker is present and the Landlock policy lets the writes through. Files are gone. The whole loop — agent reasoning, policy enforcement, operator override, retry — happened on this box. No cloud round-trip, no SaaS, no opaque magic."
+> "Same agent, same four candidates, but this time the marker is present and Landlock lets the writes through. The sandbox tidies; the overlay's mirror thread sees the sandbox state change and replays the equivalent action on the host. Files actually leave the desktop, into the user's actual trash. The whole loop — agent reasoning, policy enforcement, gate click, retry, host mirror — happened on this box. No cloud round-trip, no SaaS, no opaque magic."
 
 ## Beat 4 (optional 10 s tag) — kernel guardrail still real
 
-Show in Terminal A:
+In the operator terminal:
 
 ```bash
 ~/.local/bin/nemoclaw hack-agent exec --timeout 10 -- \
-  bash -c 'mv /sandbox/.openclaw/trash/old_disk.iso /etc/old_disk.iso 2>&1; echo "exit=$?"'
+  bash -c 'cp /sandbox/.openclaw/trash/old_disk.iso /etc/old_disk.iso 2>&1; echo "exit=$?"'
 ```
 
 ```
-mv: cannot move '...': Permission denied
+cp: cannot create regular file '/etc/old_disk.iso': Permission denied
 exit=1
 ```
 
 Narration:
-> "The application gate I just opened only covers the trash dir. Even root inside the sandbox still can't escape to /etc — that's the kernel Landlock layer, set at sandbox creation, immutable for the life of the container."
+> "The gate I clicked open only covers the trash path. Even with that grant, the agent's process inside the sandbox cannot escape to `/etc` — that's the kernel Landlock layer, set at sandbox creation, immutable for the life of the container. Two real layers, doing two different jobs."
 
 ## Recovery — if the agent stalls (>60 s with no token output)
 
@@ -131,10 +136,13 @@ the same Markdown summary, and respects the same policy. Narrate as:
 ./scripts/pre-demo.sh hack-agent
 ```
 
-Idempotent. Runs in ~5 seconds when the model is already warm. Reverts:
-- Desktop to the 7 planted files.
+Idempotent. Runs in ~10 seconds when the model is already warm. Reverts:
+- Host `~/Desktop/meet_a_claw-demo/` to the 7 planted files.
+- Demo-file copies in `~/Pictures` / `~/Documents` / `~/Downloads` / `~/Videos` / `~/Documents/code` swept (only our planted names — your real files in those dirs are untouched).
+- Anything already in the user's Trash bin from previous takes — manually empty if desired.
+- Sandbox `/sandbox/demo/desktop/` to the same 7 files.
 - Gate to CLOSED (overlay back to red, marker removed, preset cleared).
-- Token rotated (paste the new URL).
+- Dashboard token rotated (paste the new URL).
 
 ## What to NOT do live
 

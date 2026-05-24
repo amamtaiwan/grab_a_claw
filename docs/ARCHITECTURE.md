@@ -33,35 +33,18 @@
 
 These three choices shape Phase 4. Each is reversible but cheaper to nail early.
 
-### D1. Animation layer technology
+### D1. Animation layer technology — **picked: Python + pyglet 2.1, native X11 borderless overlay**
 
-| Option | Pros | Cons |
-|---|---|---|
-| **Electron** | Easy to draw cute character + run anywhere on the screen, mature toolchain | Heavy binary (~150 MB), slow startup |
-| **Tauri** (Rust + webview) | ~10 MB binary, modern stack, web-tech UI | Less ecosystem for "on-desktop pet" libraries |
-| **Native X11 transparent overlay** (Python + GTK or pyglet) | Truly draws *on* the desktop, can sit above all windows | X11-specific (we're on Ubuntu, GNOME defaults to Wayland; need to confirm session type or force X11) |
-| **Browser tab** (just a webpage) | Zero setup, easiest dev | Lives inside a window, not "on the desktop" — loses the embodied feel |
+Why: the demo's core argument is "the policy stopped a real action on the user's real desktop." Drawing inside a regular browser tab undermines that — the overlay needs to feel native. Tauri or Electron would have worked but bigger binary and slower iteration. pyglet 2.1's GL-backed sprite/shape pipeline keeps the lobster + gate at 60 fps with negligible CPU; the trade-off is X11-only, which is fine because the demo machine runs Ubuntu 24.04 with an X11 session (verified `XDG_SESSION_TYPE=x11`).
 
-<!-- TODO: pick one. Recommend Tauri for binary size + cross-platform optionality.
-     Recommend native X11 if the "feels physically on my desktop" effect is the core of the demo. -->
+### D2. Agent ↔ animation communication — **picked: filesystem watcher + sandbox-state polling**
 
-### D2. Agent ↔ animation communication
+Two channels, both file-based, both auditable:
+- **Gate state**: the host-side `/tmp/meet_a_claw-gate-state` file written by `grant-trash.sh` / `revoke-trash.sh`. The overlay watches it with `watchdog.observers.polling.PollingObserver` (500 ms interval — avoids inotify saturation on dev boxes with lots of file watchers). When the file changes, the overlay flips the gate visual.
+- **Mirror trigger**: a daemon thread polls the sandbox via `docker exec ls` every ~1.5 s, looking for new files in `/sandbox/demo/sorted/<bucket>/` and `/sandbox/.openclaw/trash/`. For each unseen sandbox arrival, it mirrors the equivalent host action (`shutil.move` or `gio trash`).
 
-The animation needs to know (a) where the mascot should walk to, (b) what file it's carrying, (c) whether a policy just allowed or denied something.
+We considered WebSockets / unix sockets for lower latency, but the polling overhead is invisible at human scale and the filesystem channel doesn't need NemoClaw network policy carve-outs.
 
-| Option | Notes |
-|---|---|
-| **WebSocket server in animation app, agent skill POSTs** | Lowest latency; needs network policy to allow the loopback port |
-| **Unix domain socket** | No network policy needed; sandbox needs the socket bind-mounted in |
-| **Tail OCSF audit log file from animation** | Single source of truth = the audit log. Beautiful for the "see what the policy did" story. Slight latency from log flush. |
+### D3. Character art — **picked: Twemoji lobster (🦞, U+1F99E)**
 
-<!-- TODO: pick one. Audit-log-tail has the strongest demo story; combine with a
-     direct skill→animation channel for low-latency "walk to (x,y)" commands. -->
-
-### D3. Character art
-
-- **Lobster (claw mascot)** — matches `OpenClaw` / `NemoClaw` / `meet_a_claw` name puns. Original design needed.
-- **Q-version Jensen Huang** — appeals to NVIDIA judges directly. Caricature — need to be careful about likeness/parody handling for a public submission.
-- **Both, user-selectable** — fun bonus. Adds ~1 evening of work.
-
-<!-- TODO: pick one. -->
+CC-BY-4.0, render-as-PNG-at-2× via pyglet, attribution in `ui/assets/sprites/ATTRIBUTION.md` and the project LICENSE. Replaceable: the overlay only loads one sprite file from `assets/sprites/`; a custom lobster (or Q-Jensen) could swap in by replacing that PNG, no code change.
