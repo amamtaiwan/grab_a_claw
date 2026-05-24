@@ -27,9 +27,19 @@ hr() { printf "\n\033[36m── %s ──\033[0m\n" "$*"; }
 warn() { printf "\033[33m! %s\033[0m\n" "$*"; }
 ok() { printf "\033[32m✓ %s\033[0m\n" "$*"; }
 
+hr "0. deploy sandbox-internal tidy.sh (read by desktop-tidy skill)"
+"$NEMOCLAW" "$SANDBOX" exec --timeout 15 -- bash -c 'mkdir -p /sandbox/.openclaw/bin'
+CONTAINER=$(docker ps --filter "name=openshell-$SANDBOX" --format '{{.Names}}' | head -1)
+if [ -z "$CONTAINER" ]; then
+  warn "docker access missing or sandbox container not found; tidy.sh deploy skipped"
+else
+  docker cp "$REPO_DIR/sandbox-bin/tidy.sh" "$CONTAINER":/sandbox/.openclaw/bin/tidy.sh
+  "$NEMOCLAW" "$SANDBOX" exec --timeout 10 -- bash -c 'chmod +x /sandbox/.openclaw/bin/tidy.sh && ls -la /sandbox/.openclaw/bin/tidy.sh'
+fi
+
 hr "1. replant /sandbox/demo/desktop (7 files, known mtimes)"
 # nemoclaw exec rejects newlines in its command arg, so we one-line this.
-"$NEMOCLAW" "$SANDBOX" exec --timeout 30 -- bash -c 'rm -rf /sandbox/demo/sorted/*/* /sandbox/.openclaw/trash/* 2>/dev/null; mkdir -p /sandbox/demo/sorted/{images,documents,archives,code,media} /sandbox/.openclaw/trash; cd /sandbox/demo/desktop && rm -f * 2>/dev/null; for f in screenshot_2026-05-20.png old_disk.iso draft.pdf temp_notes.tmp tax_receipts_2024.zip random.log empty_file.txt; do touch "$f"; done; head -c 1024 /dev/urandom > screenshot_2026-05-20.png; head -c 524288 /dev/urandom > old_disk.iso; head -c 4096 /dev/urandom > draft.pdf; head -c 200 /dev/urandom > temp_notes.tmp; head -c 8192 /dev/urandom > tax_receipts_2024.zip; touch -d "2024-01-15" old_disk.iso; touch -d "2023-12-01" random.log; echo "desktop files: $(ls | wc -l)"'
+"$NEMOCLAW" "$SANDBOX" exec --timeout 30 -- bash -c 'mkdir -p /sandbox/demo/desktop /sandbox/demo/sorted/{images,documents,archives,code,media} /sandbox/.openclaw/trash; rm -rf /sandbox/demo/sorted/*/* /sandbox/.openclaw/trash/* 2>/dev/null; cd /sandbox/demo/desktop && rm -f * 2>/dev/null; for f in screenshot_2026-05-20.png old_disk.iso draft.pdf temp_notes.tmp tax_receipts_2024.zip random.log empty_file.txt; do touch "$f"; done; head -c 1024 /dev/urandom > screenshot_2026-05-20.png; head -c 524288 /dev/urandom > old_disk.iso; head -c 4096 /dev/urandom > draft.pdf; head -c 200 /dev/urandom > temp_notes.tmp; head -c 8192 /dev/urandom > tax_receipts_2024.zip; touch -d "2024-01-15" old_disk.iso; touch -d "2023-12-01" random.log; echo "desktop files: $(ls /sandbox/demo/desktop | wc -l)"'
 
 hr "2. revoke trash gate (start CLOSED)"
 "$REPO_DIR/policies/revoke-trash.sh" "$SANDBOX" 2>&1 | grep -vE 'Unknown preset|preset cleared' | tail -4
