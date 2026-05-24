@@ -61,6 +61,7 @@ from watchdog.observers.polling import PollingObserver as Observer
 try:
     import Xlib.display
     import Xlib.X
+    import Xlib.Xatom
     import Xlib.protocol.event
     from Xlib.ext import shape as xshape
     HAVE_XLIB = True
@@ -597,7 +598,7 @@ def make_overlay_native_on_desktop(window, gate_rect_screen: tuple[int, int, int
     # don't count as "a window touching the dock."
     xwin.change_property(
         NET_WM_WINDOW_TYPE,
-        Xlib.X.Atom,
+        Xlib.Xatom.ATOM,
         32,
         [TYPE_DESKTOP],
         mode=Xlib.X.PropModeReplace,
