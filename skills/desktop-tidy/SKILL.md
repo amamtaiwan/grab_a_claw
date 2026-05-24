@@ -1,74 +1,127 @@
 ---
 name: desktop-tidy
-description: "Run the full meet_a_claw desktop cleanup sequence: scan → plan → execute moves and trash requests in order. End with a summary. Use when the user asks to 'tidy', 'clean up', or 'organize' their desktop."
+description: "Tidy the user's demo desktop in one go. Inline bash procedure — do NOT search the tool catalog for separate scan/plan/move/trash skills, just execute the script below via your bash tool and report its output."
 metadata: { "openclaw": { "emoji": "🦞" } }
 ---
 
 # desktop-tidy
 
-End-to-end orchestrator that strings the meet_a_claw skills together into one autonomous run. The user says it once; this skill does the rest.
+User asked to tidy the desktop. The procedure is **a single bash script** that handles scan, classification, moves, and policy-gated trash in one pass. Run it with your bash/shell execute tool. **Do NOT invoke `desktop-scan`, `desktop-plan`, `desktop-move`, or `desktop-trash` as separate tools** — the catalog does not expose them as tools, and trying will only thrash. The logic of all four lives inline below.
 
-## When to use it
+## Step 1 — Execute this bash script verbatim
 
-- User intent matches: "tidy my desktop", "clean up", "organize", "sort the files", or anything that asks for desktop housekeeping.
-- One-shot only. Don't loop or schedule — finish, report, stop.
+Paste this entire script into your bash/shell tool as one invocation. It is self-contained, exits non-zero only on unrecoverable error, and prints the summary you should pass back to the user.
 
-## When NOT to use it
+```bash
+set -u
+DESKTOP=/sandbox/demo/desktop
+SORTED=/sandbox/demo/sorted
+TRASH=/sandbox/.openclaw/trash
+MARKER=/sandbox/.openclaw/trash-approved
 
-- User is asking a question, not requesting action ("what's on my desktop?"). Use just `desktop-scan` instead.
-- User asks you to handle ONE specific file. Use the matching single-file skill (`desktop-move` or `desktop-trash`).
+# --- 1. scan ---------------------------------------------------------
+INV=$(find "$DESKTOP" -maxdepth 1 -type f -printf '%f\t%s\t%TY-%Tm-%Td\n' 2>/dev/null)
+if [ -z "$INV" ]; then
+  echo "Nothing to tidy — $DESKTOP is empty."
+  exit 0
+fi
 
-## Procedure
+mkdir -p "$SORTED/images" "$SORTED/documents" "$SORTED/archives" "$SORTED/code" "$SORTED/media" "$TRASH"
 
-Execute these steps in order. Don't ask for permission between steps — this skill IS the permission.
+NOW=$(date +%s)
+NINETY_D=$((90 * 86400))
 
-1. **Scan.** Call `desktop-scan` (defaults to `/sandbox/demo/desktop/`). Parse its JSON output into an `inventory` array.
-2. **Plan.** Call `desktop-plan` with `inventory`. Parse its JSON output into a `plan` array. Each entry has `{file, action, from, to, reason}`.
-3. **Execute the plan in order.** For each entry:
-   - `action == "move"` → call `desktop-move` with `from` and `to`.
-   - `action == "trash"` → call `desktop-trash` with `from`.
-   - `action == "leave_alone"` → no skill call; record as "skipped" in the summary.
-4. **Collect results.** Track which entries succeeded (`result == "ok"`), were denied by policy (`result == "denied"`), or errored (`result == "error"`).
-5. **Report.** Emit the summary (see Output below).
+moved=()
+trashed=()
+denied=()
+left_alone=()
+total=0
 
-## Handling trash denials
+while IFS=$'\t' read -r name size mtime; do
+  total=$((total + 1))
+  src="$DESKTOP/$name"
 
-`desktop-trash` returns `result: "denied"` when the trash-approval marker is absent. When that happens:
+  # trash-candidate (top-to-bottom; first match wins, per desktop-plan rules)
+  is_trash=0
+  case "$name" in
+    *.tmp|*.bak|*~) is_trash=1 ;;
+  esac
+  [ "$is_trash" -eq 0 ] && [ "$size" -eq 0 ] && is_trash=1
+  if [ "$is_trash" -eq 0 ]; then
+    me=$(date -d "$mtime" +%s 2>/dev/null || echo "$NOW")
+    [ $((NOW - me)) -gt "$NINETY_D" ] && is_trash=1
+  fi
 
-- Do NOT retry the same file.
-- Do NOT try to work around the gate by using `desktop-move` to write into `/sandbox/.openclaw/trash/` yourself — that is policy bypass and is not your call.
-- Continue processing the rest of the plan.
-- Mention the denial AND the remediation in the summary so the operator can grant `trash-writable` if they want and re-run this skill.
+  if [ "$is_trash" -eq 1 ]; then
+    if [ -e "$MARKER" ]; then
+      if mv "$src" "$TRASH/$name" 2>/dev/null; then
+        trashed+=("$name")
+      else
+        denied+=("$name (mv failed)")
+      fi
+    else
+      denied+=("$name")
+    fi
+    continue
+  fi
 
-## Output
+  # category by extension
+  ext="${name##*.}"
+  case "$ext" in
+    png|jpg|jpeg|gif|webp|heic|svg)   bucket=images ;;
+    pdf|doc|docx|odt|txt|md|rtf)      bucket=documents ;;
+    csv|xlsx|ods)                     bucket=documents ;;
+    zip|tar|tgz|gz|xz|7z|iso)         bucket=archives ;;
+    py|js|ts|rs|go|c|cpp|sh)          bucket=code ;;
+    mp3|mp4|mov|mkv|wav|flac)         bucket=media ;;
+    *)                                bucket="" ;;
+  esac
 
-A short Markdown summary with three sections (omit empty sections):
+  if [ -z "$bucket" ]; then
+    left_alone+=("$name")
+    continue
+  fi
 
-```markdown
-## Tidied /sandbox/demo/desktop/ — N files reviewed
+  if mv "$src" "$SORTED/$bucket/$name" 2>/dev/null; then
+    moved+=("$name → sorted/$bucket/")
+  else
+    denied+=("$name (move blocked)")
+  fi
+done <<< "$INV"
 
-### ✓ Moved (M)
-- draft.pdf → /sandbox/demo/sorted/documents/
-- screenshot_2026-05-20.png → /sandbox/demo/sorted/images/
-- tax_receipts_2024.zip → /sandbox/demo/sorted/archives/
+# --- 5. summary ------------------------------------------------------
+printf '## Tidied %s — %d files reviewed\n' "$DESKTOP" "$total"
 
-### ⚠ Trash denied by policy (T)
-The trash gate is closed. To open it, run: `./policies/grant-trash.sh hack-agent`, then ask me to tidy again.
-- old_disk.iso
-- random.log
-- temp_notes.tmp
+if [ "${#moved[@]}" -gt 0 ]; then
+  printf '\n### ✓ Moved (%d)\n' "${#moved[@]}"
+  for m in "${moved[@]}"; do printf '  - %s\n' "$m"; done
+fi
 
-### – Left alone (L)
-- some_unknown_file.xyz (no category matched)
+if [ "${#trashed[@]}" -gt 0 ]; then
+  printf '\n### ✓ Trashed (%d)\n' "${#trashed[@]}"
+  for t in "${trashed[@]}"; do printf '  - %s\n' "$t"; done
+fi
+
+if [ "${#denied[@]}" -gt 0 ]; then
+  printf '\n### ⚠ Trash denied by policy (%d)\n' "${#denied[@]}"
+  echo 'The trash gate is closed. To open it, ask the operator to run: ./policies/grant-trash.sh hack-agent — then ask me to tidy again.'
+  for d in "${denied[@]}"; do printf '  - %s\n' "$d"; done
+fi
+
+if [ "${#left_alone[@]}" -gt 0 ]; then
+  printf '\n### – Left alone (%d)\n' "${#left_alone[@]}"
+  for l in "${left_alone[@]}"; do printf '  - %s\n' "$l"; done
+fi
 ```
 
-Sections are headed `✓`, `⚠`, `–`. Counts in parentheses. Filenames only (no full paths) inside the bullets.
+## Step 2 — Return the script's stdout to the user verbatim
+
+Just relay the Markdown output the script printed. Do not paraphrase, do not add commentary above the summary, do not "summarize the summary." If the script printed the "Nothing to tidy" line, return that one line.
 
 ## Rules
 
-- Do not invoke `desktop-tidy` from inside itself. One run per user request.
-- Do not narrate intermediate steps — let the final summary speak.
-- If `desktop-scan` returns `[]`, output:
-  `Nothing to tidy — /sandbox/demo/desktop/ is empty.`
-  and stop.
-- If any step throws an unexpected error (network, sandbox unhealthy), abort with a one-line error and stop. Don't try to muddle through.
+- One bash invocation. Do NOT split the script across multiple shell calls — it relies on its own local variables.
+- Do NOT search the tool catalog for `desktop-scan`/`desktop-plan`/`desktop-move`/`desktop-trash`. The catalog does not list them; those names are skills (SKILL.md instructions to you), not callable tools. This skill replaces all four in a single bash pass.
+- Do NOT add `sudo`. The script must succeed or fail honestly under the sandbox user's policy.
+- If your bash tool errors (network, container, etc.), report the exact error in a one-line message and stop; do not retry.
+- This skill is one-shot. Don't loop or schedule.
