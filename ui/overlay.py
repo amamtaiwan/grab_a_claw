@@ -583,14 +583,30 @@ def make_overlay_native_on_desktop(window, gate_rect_screen: tuple[int, int, int
     xdisplay = Xlib.display.Display()
     xwin = xdisplay.create_resource_object("window", xid)
 
+    NET_WM_WINDOW_TYPE = xdisplay.intern_atom("_NET_WM_WINDOW_TYPE")
+    TYPE_DESKTOP = xdisplay.intern_atom("_NET_WM_WINDOW_TYPE_DESKTOP")
     NET_WM_STATE = xdisplay.intern_atom("_NET_WM_STATE")
-    ABOVE = xdisplay.intern_atom("_NET_WM_STATE_ABOVE")
     SKIP_TASKBAR = xdisplay.intern_atom("_NET_WM_STATE_SKIP_TASKBAR")
     SKIP_PAGER = xdisplay.intern_atom("_NET_WM_STATE_SKIP_PAGER")
+    BELOW = xdisplay.intern_atom("_NET_WM_STATE_BELOW")
 
-    # Single ClientMessage can carry up to 2 atoms via data[2] and data[3].
-    # Apply (ABOVE, SKIP_TASKBAR) and (SKIP_PAGER, 0) in two passes.
-    for atom_a, atom_b in [(ABOVE, SKIP_TASKBAR), (SKIP_PAGER, 0)]:
+    # Tag the window as desktop-class. WMs that honor _NET_WM_WINDOW_TYPE
+    # (mutter, kwin, openbox, ...) will park it on the desktop layer
+    # above the wallpaper but below every regular app window. This also
+    # sidesteps Ubuntu Dock's intelli-hide because desktop-class windows
+    # don't count as "a window touching the dock."
+    xwin.change_property(
+        NET_WM_WINDOW_TYPE,
+        Xlib.X.Atom,
+        32,
+        [TYPE_DESKTOP],
+        mode=Xlib.X.PropModeReplace,
+    )
+
+    # Suppress taskbar / alt-tab, and explicitly mark as BELOW so any
+    # late-arriving WM that doesn't read the type atom still gets the
+    # z-order right.
+    for atom_a, atom_b in [(SKIP_TASKBAR, SKIP_PAGER), (BELOW, 0)]:
         data = (32, [1, atom_a, atom_b, 0, 0])
         ev = Xlib.protocol.event.ClientMessage(
             window=xwin, client_type=NET_WM_STATE, data=data
