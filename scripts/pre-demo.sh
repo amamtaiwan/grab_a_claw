@@ -34,7 +34,11 @@ if [ -z "$CONTAINER" ]; then
   warn "docker access missing or sandbox container not found; tidy.sh deploy skipped"
 else
   docker cp "$REPO_DIR/sandbox-bin/tidy.sh" "$CONTAINER":/sandbox/.openclaw/bin/tidy.sh
-  "$NEMOCLAW" "$SANDBOX" exec --timeout 10 -- bash -c 'chmod +x /sandbox/.openclaw/bin/tidy.sh && ls -la /sandbox/.openclaw/bin/tidy.sh'
+  # docker cp preserves source perms (we chmod +x on the host file in repo),
+  # and chown to sandbox so subsequent runs by the sandbox user have nothing
+  # to argue about.
+  docker exec --user 0 "$CONTAINER" chown sandbox:sandbox /sandbox/.openclaw/bin/tidy.sh
+  "$NEMOCLAW" "$SANDBOX" exec --timeout 10 -- ls -la /sandbox/.openclaw/bin/tidy.sh
 fi
 
 hr "1. replant /sandbox/demo/desktop (7 files, known mtimes)"
