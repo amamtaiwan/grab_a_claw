@@ -591,11 +591,11 @@ def make_overlay_native_on_desktop(window, gate_rect_screen: tuple[int, int, int
     gx, gy, gw, gh = gate_rect_screen
     xwin.shape_rectangles(
         operation=xshape.SO.Set,
+        destination_kind=xshape.SK.Input,
         ordering=0,  # Unsorted
         x_offset=0,
         y_offset=0,
         rectangles=[(int(gx), int(gy), int(gw), int(gh))],
-        kind=xshape.SK.Input,
     )
     xdisplay.sync()
     print(f"[overlay] X11 SHAPE input set to gate rect {gate_rect_screen}; rest click-through")
