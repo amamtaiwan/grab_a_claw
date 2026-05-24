@@ -504,8 +504,8 @@ def start_gate_watcher(state: GateState) -> Observer:
 # ── pyglet plumbing ────────────────────────────────────────────────────
 
 
-def make_window() -> Window:
-    """Borderless, transparent, full-screen overlay anchored at (0,0).
+def make_window(origin_x: int, origin_y: int, width: int, height: int) -> Window:
+    """Transparent, borderless overlay anchored at (origin_x, origin_y).
     X11 atoms + SHAPE input region are applied in main() once the
     window has a real X11 ID."""
     # WINDOW_STYLE_OVERLAY tells pyglet to pick an ARGB visual on X11 so
@@ -521,8 +521,8 @@ def make_window() -> Window:
     ):
         try:
             window = Window(
-                width=STAGE_W,
-                height=STAGE_H,
+                width=width,
+                height=height,
                 config=config,
                 style=style,
                 caption="meet_a_claw",
@@ -535,12 +535,12 @@ def make_window() -> Window:
     else:
         # absolute fallback with no special config
         window = Window(
-            width=STAGE_W, height=STAGE_H,
+            width=width, height=height,
             style=Window.WINDOW_STYLE_BORDERLESS,
             caption="meet_a_claw", resizable=False,
         )
         print("[overlay] window style: default (no transparency available)")
-    window.set_location(0, 0)
+    window.set_location(origin_x, origin_y)
     return window
 
 
@@ -632,21 +632,35 @@ def main() -> int:
     # Probe real screen size and re-anchor the lobster's geography so
     # the demo scales to whatever the operator's monitor is.
     global STAGE_W, STAGE_H, HOME_POS, TRASH_ZONE_POS, GATE_X, GATE_Y, GATE_HEIGHT
+    screen_w, screen_h = STAGE_W, STAGE_H
     try:
         _disp = pyglet.display.get_display()
         _scr = _disp.get_default_screen()
-        STAGE_W = _scr.width
-        STAGE_H = _scr.height
+        screen_w, screen_h = _scr.width, _scr.height
     except Exception:
         pass  # keep defaults
-    HOME_POS = (max(160, int(STAGE_W * 0.10)), max(180, int(STAGE_H * 0.20)))
-    TRASH_ZONE_POS = (int(STAGE_W * 0.84), HOME_POS[1])
-    GATE_X = int(STAGE_W * 0.72)
-    GATE_HEIGHT = max(220, int(STAGE_H * 0.32))
-    GATE_Y = HOME_POS[1] - int(GATE_HEIGHT * 0.3)
-    print(f"[overlay] screen {STAGE_W}x{STAGE_H}; HOME={HOME_POS} TRASH={TRASH_ZONE_POS} GATE_X={GATE_X}")
 
-    window = make_window()
+    # GNOME Ubuntu Dock auto-hides whenever ANY window touches its rect,
+    # regardless of opacity. Reserving a margin so our overlay doesn't
+    # overlap the dock keeps it visible. Tweak via env vars to suit
+    # different desktop environments (e.g. KDE panel at bottom).
+    margin_left = int(os.environ.get("MEETACLAW_MARGIN_LEFT", "80"))
+    margin_top = int(os.environ.get("MEETACLAW_MARGIN_TOP", "32"))
+    margin_right = int(os.environ.get("MEETACLAW_MARGIN_RIGHT", "0"))
+    margin_bottom = int(os.environ.get("MEETACLAW_MARGIN_BOTTOM", "48"))
+
+    STAGE_W = max(400, screen_w - margin_left - margin_right)
+    STAGE_H = max(300, screen_h - margin_top - margin_bottom)
+
+    HOME_POS = (max(80, int(STAGE_W * 0.06)), max(120, int(STAGE_H * 0.18)))
+    TRASH_ZONE_POS = (int(STAGE_W * 0.86), HOME_POS[1])
+    GATE_X = int(STAGE_W * 0.74)
+    GATE_HEIGHT = max(220, int(STAGE_H * 0.30))
+    GATE_Y = HOME_POS[1] - int(GATE_HEIGHT * 0.3)
+    print(f"[overlay] screen {screen_w}x{screen_h}; reserved L{margin_left}/T{margin_top}/R{margin_right}/B{margin_bottom}")
+    print(f"[overlay] stage    {STAGE_W}x{STAGE_H} at ({margin_left},{margin_top}); HOME={HOME_POS} TRASH={TRASH_ZONE_POS} GATE_X={GATE_X}")
+
+    window = make_window(origin_x=margin_left, origin_y=margin_top, width=STAGE_W, height=STAGE_H)
     sprite_img = pyglet.image.load(str(SPRITE_PATH))
     sprite_img.anchor_x = sprite_img.width // 2
     sprite_img.anchor_y = sprite_img.height // 2
@@ -862,16 +876,16 @@ def main() -> int:
     pyglet.clock.schedule_interval(tick, 1 / 60)
 
     # Promote to a click-through, always-on-top desktop overlay. SHAPE
-    # converts X11 coordinates (top-left origin), so we mirror y here:
-    # pyglet's gate is at (GATE_X, GATE_Y) in bottom-left-origin pixels.
-    gate_top = STAGE_H - GATE_Y - GATE_HEIGHT
+    # input region is in WINDOW coordinates (not screen). pyglet draws
+    # bottom-left-origin, but SHAPE wants top-left-origin, so flip y.
+    gate_top_local = STAGE_H - GATE_Y - GATE_HEIGHT
     # Generous padding so the operator can click the bar without missing.
     pad = 30
     make_overlay_native_on_desktop(
         window,
         gate_rect_screen=(
             int(GATE_X) - pad,
-            int(gate_top) - pad,
+            int(gate_top_local) - pad,
             int(GATE_WIDTH) + 2 * pad,
             int(GATE_HEIGHT) + 2 * pad,
         ),
