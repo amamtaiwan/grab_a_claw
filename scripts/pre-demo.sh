@@ -107,7 +107,31 @@ echo "]" >> "$POSITIONS_FILE"
 ok "planted $N demo files; positions written to $POSITIONS_FILE"
 echo "   (right-click desktop → Refresh / press F5 if icons don't appear immediately)"
 
-# Pre-create dest dirs so the first mirror has somewhere to land.
+hr "0d. create 5 sorted folders on ~/Desktop with explicit ding positions"
+# Sibling folders ON the desktop so the audience sees both the original
+# files AND the destination folders at once. Lobster walks file→folder
+# and the host mv moves the real file inside (visible by double-clicking
+# the folder).
+declare -A FOLDER_POS=(
+  [Images]="200,420"
+  [Documents]="550,420"
+  [Archives]="900,420"
+  [Code]="1250,420"
+  [Media]="1600,420"
+)
+for folder in "${!FOLDER_POS[@]}"; do
+  path="$HOST_DESKTOP/$folder"
+  # Wipe + recreate so positions get re-set fresh each run.
+  rm -rf "$path" 2>/dev/null
+  mkdir -p "$path"
+  pos="${FOLDER_POS[$folder]}"
+  gio set "$path" metadata::nautilus-icon-position "$pos" 2>/dev/null || true
+  gio set "$path" metadata::desktopfile-icon-position "$pos" 2>/dev/null || true
+done
+ok "created Images/Documents/Archives/Code/Media folders at row y=420"
+
+# Pre-create dest dirs we still mirror to (kept for legacy/audit; not
+# the demo's visible destinations any more).
 for dest in "${HOST_DESTS[@]}"; do
   mkdir -p "$dest"
 done

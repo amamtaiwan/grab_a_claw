@@ -42,6 +42,22 @@ for dest in "${HOST_DESTS[@]}"; do
   done
 done
 
+hr "2b. remove sorted desktop folders (Images/Documents/Archives/Code/Media)"
+for folder in Images Documents Archives Code Media; do
+  path="$HOST_DESKTOP/$folder"
+  if [ -d "$path" ]; then
+    # Pull any demo files inside back to the desktop, then rmdir if empty.
+    for name in "${DEMO_FILES[@]}"; do
+      if [ -f "$path/$name" ]; then
+        rm -f "$path/$name" && echo "  rm $path/$name"
+      fi
+    done
+    # rmdir succeeds only if empty — won't nuke folders the user filled.
+    rmdir "$path" 2>/dev/null && echo "  rmdir $path" || \
+      warn "$path not empty; leaving alone (user content inside?)"
+  fi
+done
+
 hr "3. restore stashed files to ~/Desktop"
 if [ ! -f "$STASH_POINTER" ]; then
   warn "no stash pointer at $STASH_POINTER — nothing to restore"

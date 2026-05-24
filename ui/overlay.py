@@ -115,14 +115,28 @@ HOST_DEMO_DIR = HOST_HOME / "Desktop"
 # position of each planted demo icon. Lobster walks to those positions.
 POSITIONS_FILE = Path("/tmp/meet_a_claw-positions.json")
 
-# Where mirrored files end up on the host. Categories match the
-# sandbox-internal sorted/ layout that tidy.sh writes into.
+# Where mirrored files end up on the host. To keep the demo's payoff
+# *visible on the desktop*, we drop into sibling folders directly on
+# ~/Desktop instead of sending them off to ~/Pictures / ~/Documents
+# where the audience can't see them. pre-demo.sh creates these folders
+# and sets their icon positions via gio so the lobster has a known
+# screen-coord drop zone for each bucket.
 HOST_DEST = {
-    "images": HOST_HOME / "Pictures",
-    "documents": HOST_HOME / "Documents",
-    "archives": HOST_HOME / "Downloads",
-    "code": HOST_HOME / "Documents" / "code",
-    "media": HOST_HOME / "Videos",
+    "images":    HOST_HOME / "Desktop" / "Images",
+    "documents": HOST_HOME / "Desktop" / "Documents",
+    "archives":  HOST_HOME / "Desktop" / "Archives",
+    "code":      HOST_HOME / "Desktop" / "Code",
+    "media":     HOST_HOME / "Desktop" / "Media",
+}
+# Screen positions where the bucket-folder icons live on the desktop.
+# Matches the layout pre-demo.sh sets via gio. Used to convert into
+# pyglet drop zones once the overlay knows the window origin.
+HOST_FOLDER_SCREEN_POS = {
+    "images":    (200,  420),
+    "documents": (550,  420),
+    "archives":  (900,  420),
+    "code":      (1250, 420),
+    "media":     (1600, 420),
 }
 # Sandbox paths we poll for new arrivals.
 SANDBOX_SORTED_BUCKETS = [
@@ -768,16 +782,16 @@ def main() -> int:
     mirror_thread = SandboxMirror(_find_sandbox_container, mirror_queue)
     mirror_thread.start()
 
-    # Drop zones in pyglet window-local coords. The lobster heads to
-    # the matching zone after picking up a file.
-    DROP_ZONES = {
-        "images":    (int(STAGE_W * 0.06), int(STAGE_H * 0.30)),
-        "documents": (int(STAGE_W * 0.06), int(STAGE_H * 0.20)),
-        "archives":  (int(STAGE_W * 0.06), int(STAGE_H * 0.10)),
-        "code":      (int(STAGE_W * 0.16), int(STAGE_H * 0.20)),
-        "media":     (int(STAGE_W * 0.16), int(STAGE_H * 0.10)),
-        "trash":     TRASH_ZONE_POS,
-    }
+    # Drop zones in pyglet window-local coords. For sorted buckets, these
+    # are the screen-coord positions of the actual folder icons that
+    # pre-demo.sh planted on the desktop, converted into pyglet space.
+    # For trash, the existing trash zone (with the gate in front).
+    DROP_ZONES = {}
+    for bucket, (sx, sy) in HOST_FOLDER_SCREEN_POS.items():
+        DROP_ZONES[bucket] = screen_to_pyglet(
+            sx, sy, margin_left, margin_top, STAGE_H, screen_h,
+        )
+    DROP_ZONES["trash"] = TRASH_ZONE_POS
 
     def begin_task_for_event(event: tuple[str, str, str]) -> None:
         """Translate a mirror queue entry into a lobster pickup task."""
