@@ -105,6 +105,8 @@ GATE_Y = (STAGE_H - GATE_HEIGHT) / 2
 
 GATE_COLOR_CLOSED = (220, 60, 60)
 GATE_COLOR_OPEN = (80, 200, 120)
+GATE_COLOR_PENDING = (235, 190, 50)  # amber/yellow for "in transition"
+PENDING_TIMEOUT_S = 10.0  # if the file watcher hasn't settled within this, give up
 
 
 class LobsterState(Enum):
@@ -230,11 +232,26 @@ class Lobster:
 
 
 class GateState:
-    """Thread-safe holder for whether the trash gate is currently open."""
+    """Thread-safe holder for the trash gate's state.
+
+    Tracks both the settled state (open/closed, from /tmp/meet_a_claw-
+    gate-state) and a 'pending' state (set when the operator clicks to
+    toggle; cleared when the watcher sees the file change OR when the
+    pending action times out). The 'pending' state lets the overlay
+    paint the gate yellow immediately so the operator knows their click
+    registered, instead of waiting 2-5 s for the script chain
+    (subprocess → nemoclaw exec → policy reload → state file write →
+    polling watcher) to settle.
+    """
+
+    PENDING_OPENING = "opening"
+    PENDING_CLOSING = "closing"
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._open = self._read_initial()
+        self._pending: str | None = None
+        self._pending_started_at: float = 0.0
         self._dirty = True  # force first render
 
     @staticmethod
@@ -250,22 +267,59 @@ class GateState:
         except FileNotFoundError:
             new = False
         with self._lock:
-            if new != self._open:
-                self._open = new
+            changed = new != self._open
+            had_pending = self._pending is not None
+            self._open = new
+            self._pending = None  # settle
+            self._pending_started_at = 0.0
+            if changed or had_pending:
                 self._dirty = True
 
-    def consume_change(self) -> bool | None:
-        """Returns the new state if it changed since last consume, else None."""
+    def mark_pending(self, direction: str) -> bool:
+        """Mark a transition as in-progress. Returns True if accepted
+        (caller should kick off the script), False if already pending or
+        already in the target state."""
+        with self._lock:
+            if self._pending is not None:
+                return False  # mid-transition; ignore extra clicks
+            if direction == self.PENDING_OPENING and self._open:
+                return False
+            if direction == self.PENDING_CLOSING and not self._open:
+                return False
+            self._pending = direction
+            self._pending_started_at = time.time()
+            self._dirty = True
+            return True
+
+    def maybe_timeout_pending(self) -> None:
+        """Clear a stuck pending state after PENDING_TIMEOUT_S.
+        Called from the main loop tick so the UI can recover if the
+        script chain dies silently."""
+        with self._lock:
+            if self._pending is None:
+                return
+            if time.time() - self._pending_started_at > PENDING_TIMEOUT_S:
+                self._pending = None
+                self._pending_started_at = 0.0
+                self._dirty = True
+
+    def consume_change(self) -> bool:
+        """Returns True if anything visual changed since last consume."""
         with self._lock:
             if self._dirty:
                 self._dirty = False
-                return self._open
-            return None
+                return True
+            return False
 
     @property
     def is_open(self) -> bool:
         with self._lock:
             return self._open
+
+    @property
+    def pending(self) -> str | None:
+        with self._lock:
+            return self._pending
 
 
 # ── desktop file list from sandbox ─────────────────────────────────────
@@ -480,7 +534,15 @@ def main() -> int:
     REVOKE_SCRIPT = REPO_DIR / "policies" / "revoke-trash.sh"
 
     def toggle_gate_from_click():
-        target = REVOKE_SCRIPT if gate_state.is_open else GRANT_SCRIPT
+        # Reserve the pending slot first so the gate paints yellow on the
+        # very next frame. If a transition is already in flight, ignore
+        # the click — visual is already showing it.
+        is_open = gate_state.is_open
+        direction = GateState.PENDING_CLOSING if is_open else GateState.PENDING_OPENING
+        if not gate_state.mark_pending(direction):
+            print(f"[click-gate] ignored — already {gate_state.pending or 'in target state'}")
+            return
+        target = REVOKE_SCRIPT if is_open else GRANT_SCRIPT
         if not target.exists():
             print(f"[click-gate] script missing: {target}", file=sys.stderr)
             return
@@ -492,7 +554,7 @@ def main() -> int:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            print(f"[click-gate] triggered {target.name}")
+            print(f"[click-gate] triggered {target.name} (pending {direction})")
         except OSError as e:
             print(f"[click-gate] {target.name} spawn failed: {e}", file=sys.stderr)
 
@@ -551,7 +613,14 @@ def main() -> int:
     )
 
     def refresh_gate_label_and_color() -> None:
-        if gate_state.is_open:
+        pending = gate_state.pending
+        if pending == GateState.PENDING_OPENING:
+            gate_shape.color = GATE_COLOR_PENDING
+            gate_label.text = "gate: OPENING…"
+        elif pending == GateState.PENDING_CLOSING:
+            gate_shape.color = GATE_COLOR_PENDING
+            gate_label.text = "gate: CLOSING…"
+        elif gate_state.is_open:
             gate_shape.color = GATE_COLOR_OPEN
             gate_label.text = "gate: OPEN (click to close)"
         else:
@@ -641,10 +710,12 @@ def main() -> int:
             print(f"  refreshed: {len(available_files)} file(s) — {available_files!r}")
 
     def tick(dt: float):
-        new_state = gate_state.consume_change()
-        if new_state is not None:
+        gate_state.maybe_timeout_pending()
+        if gate_state.consume_change():
             refresh_gate_label_and_color()
-        lobster.update(dt, gate_open=gate_state.is_open)
+        # Lobster only walks through when the gate has actually settled
+        # to OPEN — a pending transition does not yet grant passage.
+        lobster.update(dt, gate_open=gate_state.is_open and gate_state.pending is None)
         # Refresh the mirror status label so the audience can see what
         # just happened on their host desktop.
         last = mirror_thread.consume_last_action()
