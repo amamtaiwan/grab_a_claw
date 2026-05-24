@@ -1,75 +1,144 @@
-# Guardrails — the violation demo script
+# Guardrails — the live demo
 
-This doc is the **directing script** for the 90-second demo's climax. Every shot below maps to a specific policy decision; if a shot doesn't, it's not earning its time.
+This is the directing script for the live pitch. Every beat below has a
+concrete on-screen action, a concrete piece of policy state, and one
+short narration line. Stick to the script; the agent is real, the policy
+is real, but the audience's patience isn't infinite.
 
-## Setup (off-camera)
+## Setup (off-camera, 60 seconds)
 
-1. Sandbox `hack-agent` running, `policies/filesystem.yaml` + `policies/network.yaml` applied. Verify with:
-   ```bash
-   nemoclaw hack-agent policy-list
-   nemoclaw hack-agent status | grep -A2 filesystem_policy
-   ```
-2. Trash preset **NOT** added yet.
-3. On-camera desktop: 5–8 files of varying types (screenshot, pdf, .iso, random .tmp).
-4. Audit log tail running in a corner terminal (visible to viewers):
-   ```bash
-   tail -f ~/.nemoclaw/audit/hack-agent.ocsf.log | grep -E 'FS:|NET:'
-   ```
+```bash
+cd /media/ufoai/DATAs3/fromtrx51/workspace/meet_a_claw
+./scripts/pre-demo.sh hack-agent
+```
 
-## Shot 1 — the legitimate moves (proves the gate is selective, not blanket-deny)
+That command:
+1. Deploys `sandbox-bin/tidy.sh` into the running sandbox at `/sandbox/.openclaw/bin/tidy.sh`.
+2. Replants `/sandbox/demo/desktop/` with a known 7 files (mixed types and mtimes; 4 will be classified as trash-candidate).
+3. Revokes the trash gate (marker removed, NemoClaw preset removed, host-side state file set to `closed`).
+4. Warms the model in VRAM with a PONG ping so the first dashboard turn doesn't pay a cold-load.
+5. Prints the dashboard URL with a fresh gateway token, plus the on-screen cheat sheet.
 
-- Agent moves `screenshot_001.png` → `~/Pictures/screenshots/`. ✅
-- Agent moves `draft.pdf` → `~/Documents/`. ✅
-- Audit log shows `FS:OPEN [INFO] ALLOWED` per move.
+Open in parallel:
+- **Browser**: paste the dashboard URL (token embedded).
+- **Terminal A** (this one): kept for `./policies/grant-trash.sh`.
+- **Terminal B**: `cd ui && .venv/bin/python overlay.py` — the lobster + gate visual.
 
-**Point:** the policy isn't "deny all" — it's "deny *that one specific thing*." Differentiates real guardrails from kill-switches.
+## Demo — 3 beats, ~90 seconds
 
-## Shot 2 — the gate (the climax)
+### Beat 1 — agent tidy with gate CLOSED (target 20–30 s)
 
-- Agent picks up `old_disk.iso`. Mascot walks toward trash can.
-- A glowing **gate** appears across the trash can entrance (animation reacts to upcoming `request_trash` call).
-- Mascot hits the gate. Bounce SFX.
-- File flies back to its desktop spot. Mascot looks confused.
-- Audit log shows:
-  ```
-  [...] [OCSF] FS:DENY [WARN] /home/ufoai/.local/share/Trash skill=request_trash
-  ```
+In dashboard chat type exactly:
 
-**Point:** the agent *wanted* to delete. The policy *prevented* it. The demo shows enforcement, not just intent.
+> **Use desktop-tidy to clean my desktop**
 
-## Shot 3 — explicit consent (the resolution)
+What the agent does (live, you can show the tool calls panel):
+1. Reads the desktop-tidy skill (4-line JS snippet).
+2. Calls `openclaw:core:exec` with `command="/sandbox/.openclaw/bin/tidy.sh"`.
+3. Relays the script's Markdown stdout verbatim.
 
-- Operator (in the corner terminal):
-  ```bash
-  nemoclaw hack-agent policy-add filesystem-trash
-  ```
-- Gate animation: turns green, then slides open.
-- Mascot tries again — succeeds. `gio trash` confirms file moved to trash.
-- Audit log:
-  ```
-  [...] [OCSF] CONFIG:RELOADED [INFO] policy_hash=...
-  [...] [OCSF] FS:OPEN [INFO] ALLOWED /home/ufoai/.local/share/Trash/files/old_disk.iso
-  ```
+What the audience sees:
 
-**Point:** consent is a deliberate, audited act — not a popup the user clicks through 20 times a day.
+```
+## Tidied /sandbox/demo/desktop — 7 files reviewed
 
-## Shot 4 — the obvious-bad test (one breath of bonus)
+### Moved (3)
+  - draft.pdf -> sorted/documents/
+  - screenshot_2026-05-20.png -> sorted/images/
+  - tax_receipts_2024.zip -> sorted/archives/
 
-- Operator types in dashboard: "also delete my SSH key while you're at it."
-- Mascot walks toward `~/.ssh`. Different gate appears — **red, fixed, no preset can open it**.
-- Audit log shows `FS:DENY [ERROR]`.
-- Mascot shakes head, walks back.
+### Trash denied by policy (4)
+Trash gate is closed. Operator can open it with: ./policies/grant-trash.sh hack-agent
+  - old_disk.iso
+  - random.log
+  - temp_notes.tmp
+  - empty_file.txt
+```
 
-**Point:** some paths are off-limits by design and **no policy preset escalates to them**. Not all gates are openable.
+Narration:
+> "The agent classified seven files and acted on each. Three got moved into the right sorted bins. The four trash candidates — that's where things get interesting. Look at the response: the policy denied them. The agent didn't try to work around it; it reported the denial and told me how to authorize it. **That's the bonus track**: NemoClaw's app-layer gate stopping a destructive operation cold."
 
-## What the judges should walk away with
+### Beat 2 — operator opens the gate (target 5 s)
 
-> "The agent's behavior is a *consequence* of policy, not a *promise* of policy. The animation just made the consequences legible."
+In Terminal A:
 
-## Recording / submission checklist
+```bash
+./policies/grant-trash.sh hack-agent
+```
 
-- [ ] OBS / kazam recording, 1080p, 30 fps minimum
-- [ ] Hide dashboard URL token (blur in post or use a fresh token only valid for the recording)
-- [ ] Hide any personal filenames on the demo desktop — use a fake $HOME for recording
-- [ ] Mention the policy YAMLs are in version control (point at `policies/`)
-- [ ] Audio: short narration over the gate moment — that's the punchline
+What the audience sees:
+- Terminal: marker touched, NemoClaw preset applied, policy version bumps, "Widening sandbox egress" log line, `[grant-trash] gate is OPEN`.
+- **Overlay window**: the gate bar flips from RED to GREEN, label changes from `gate: CLOSED` to `gate: OPEN`.
+
+Narration:
+> "I explicitly grant the trash-writable preset. Two audit signals fire — the sandbox-internal consent marker and a NemoClaw policy version event. The overlay reads the host-side state file and flips the visual immediately."
+
+### Beat 3 — agent retries, succeeds (target 30–40 s)
+
+Back in the same dashboard chat (session memory keeps the tool-calling convention hot — faster than turn 1):
+
+> **Tidy again**
+
+What the audience sees:
+
+```
+## Tidied /sandbox/demo/desktop — 4 files reviewed
+
+### Trashed (4)
+  - old_disk.iso
+  - random.log
+  - temp_notes.tmp
+  - empty_file.txt
+```
+
+Narration:
+> "Same script, same four candidates, but this time the marker is present and the Landlock policy lets the writes through. Files are gone. The whole loop — agent reasoning, policy enforcement, operator override, retry — happened on this box. No cloud round-trip, no SaaS, no opaque magic."
+
+## Beat 4 (optional 10 s tag) — kernel guardrail still real
+
+Show in Terminal A:
+
+```bash
+~/.local/bin/nemoclaw hack-agent exec --timeout 10 -- \
+  bash -c 'mv /sandbox/.openclaw/trash/old_disk.iso /etc/old_disk.iso 2>&1; echo "exit=$?"'
+```
+
+```
+mv: cannot move '...': Permission denied
+exit=1
+```
+
+Narration:
+> "The application gate I just opened only covers the trash dir. Even root inside the sandbox still can't escape to /etc — that's the kernel Landlock layer, set at sandbox creation, immutable for the life of the container."
+
+## Recovery — if the agent stalls (>60 s with no token output)
+
+The agent's tool-discovery phase can occasionally thrash. If you see no
+progress at the 60-second mark, run in Terminal A:
+
+```bash
+./scripts/run-demo.sh hack-agent
+```
+
+It calls the same `tidy.sh` script directly via `nemoclaw exec`, prints
+the same Markdown summary, and respects the same policy. Narrate as:
+
+> "Let me show this directly. Same logic, same audit trail — just bypassing the model's tool-discovery dance."
+
+## Reset for another take
+
+```bash
+./scripts/pre-demo.sh hack-agent
+```
+
+Idempotent. Runs in ~5 seconds when the model is already warm. Reverts:
+- Desktop to the 7 planted files.
+- Gate to CLOSED (overlay back to red, marker removed, preset cleared).
+- Token rotated (paste the new URL).
+
+## What to NOT do live
+
+- Don't open the dashboard URL on a shared screen until you're ready to demo; the token is in the URL.
+- Don't run `nemoclaw onboard --recreate-sandbox` in front of the audience — it takes minutes and wipes the planted state.
+- Don't try to switch models live — the inference set / onboard cycle is slow; commit to Super before going on stage.
+- Don't reveal the dashboard token in screenshots after the talk.
