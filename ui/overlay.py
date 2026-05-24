@@ -102,6 +102,7 @@ def screen_to_pyglet(sx: int, sy: int, window_origin_x: int, window_origin_y: in
 
 SANDBOX_NAME = "hack-agent"
 SANDBOX_DESKTOP_PATH = "/sandbox/demo/desktop"
+SANDBOX_DENIED_FILE = "/sandbox/.openclaw/state/last-tidy-denied.txt"
 
 # Where on the host the demo files live. pre-demo.sh plants the same 7
 # files DIRECTLY on the user's ~/Desktop (top level) so they appear as
@@ -506,7 +507,7 @@ class DesktopWatcher(threading.Thread):
     """
 
     POLL_INTERVAL_S = 1.5
-    CLAIM_WINDOW_S = 5.0  # SandboxMirror claims its filenames; we skip them
+    CLAIM_WINDOW_S = 30.0  # SandboxMirror claims its filenames; we skip them
 
     def __init__(self, event_queue: "queue.Queue", claims: dict):
         super().__init__(name="DesktopWatcher", daemon=True)
@@ -616,12 +617,37 @@ class SandboxMirror(threading.Thread):
                         self._processed.add(key_)
                     self._claims[filename] = time.time()
                     self._queue.put(("trash", "trash", filename))
+                # Files the sandbox decided to trash but the marker was
+                # absent — they stayed on the host desktop, but the
+                # overlay should still animate "lobster walked the file,
+                # bounced off the gate, brought it back."
+                for filename in self._read_denied_list(container):
+                    key_ = ("denied", filename)
+                    with self._lock:
+                        if key_ in self._processed:
+                            continue
+                        self._processed.add(key_)
+                    self._claims[filename] = time.time()
+                    self._queue.put(("denied", filename))
             self._stop.wait(self.POLL_INTERVAL_S)
 
     def reset(self) -> None:
         with self._lock:
             self._processed.clear()
             self.last_action = None
+
+    @staticmethod
+    def _read_denied_list(container: str) -> list[str]:
+        try:
+            out = subprocess.check_output(
+                ["docker", "exec", "--user", "sandbox", container,
+                 "cat", SANDBOX_DENIED_FILE],
+                text=True, timeout=3, stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError):
+            return []
+        return [line.strip() for line in out.splitlines() if line.strip()]
 
     def report(self, msg: str) -> None:
         with self._lock:
@@ -928,6 +954,24 @@ def main() -> int:
             )
             lobster.walk_to(source)
             mirror_thread.report(f"{filename} → vanished (lobster animates after the fact)")
+        elif kind == "denied":
+            _, filename = event
+            source = icon_positions_pyglet.get(filename)
+            if source is None:
+                mirror_thread.report(f"{filename} → denied (no icon position; skipping)")
+                return
+            # Walk to the file → walk toward the trash zone → the
+            # closed-gate auto-bounce handler fires when the lobster
+            # crosses the gate position with carried_file set. Then the
+            # phase=="to_dest" arrival in tick clears the carry and the
+            # task — visually: 'tried to trash, gate bounced me back.'
+            lobster.pickup_task = PickupTask(
+                filename=filename, bucket="trash",
+                source_pos=source, dest_pos=DROP_ZONES["trash"], phase="to_source",
+                do_host_op=False,  # the file is staying on the desktop
+            )
+            lobster.walk_to(source)
+            mirror_thread.report(f"{filename} → denied (will bounce off gate)")
 
     # Path to the grant/revoke scripts so a click on the gate runs them.
     REPO_DIR = HERE.parent

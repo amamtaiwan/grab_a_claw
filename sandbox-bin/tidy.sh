@@ -78,6 +78,17 @@ while IFS=$'\t' read -r name size mtime; do
   fi
 done <<< "$INV"
 
+# Persist the denied list so the overlay can animate a bounce per
+# trash-candidate even though sandbox didn't actually move them.
+STATE_DIR=/sandbox/.openclaw/state
+mkdir -p "$STATE_DIR" 2>/dev/null
+{
+  for d in "${denied[@]}"; do
+    # Strip the parenthesized reason if present so each line is just a filename.
+    printf '%s\n' "${d%% *}"
+  done
+} > "$STATE_DIR/last-tidy-denied.txt" 2>/dev/null || true
+
 printf '## Tidied %s — %d files reviewed\n' "$DESKTOP" "$total"
 
 if [ "${#moved[@]}" -gt 0 ]; then
