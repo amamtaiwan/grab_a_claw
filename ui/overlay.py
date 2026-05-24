@@ -508,15 +508,38 @@ def make_window() -> Window:
     """Borderless, transparent, full-screen overlay anchored at (0,0).
     X11 atoms + SHAPE input region are applied in main() once the
     window has a real X11 ID."""
-    config = pyglet.gl.Config(alpha_size=8, double_buffer=True)
-    window = Window(
-        width=STAGE_W,
-        height=STAGE_H,
-        config=config,
-        style=Window.WINDOW_STYLE_BORDERLESS,
-        caption="meet_a_claw",
-        resizable=False,
-    )
+    # WINDOW_STYLE_OVERLAY tells pyglet to pick an ARGB visual on X11 so
+    # glClearColor(0,0,0,0) actually shows through to the compositor.
+    # WINDOW_STYLE_BORDERLESS gives an opaque 24-bit visual even when we
+    # ask for alpha_size=8. WINDOW_STYLE_TRANSPARENT is similar but with
+    # taskbar entry; OVERLAY suppresses the taskbar too.
+    config = pyglet.gl.Config(alpha_size=8, double_buffer=True, depth_size=0)
+    for style in (
+        Window.WINDOW_STYLE_OVERLAY,
+        Window.WINDOW_STYLE_TRANSPARENT,
+        Window.WINDOW_STYLE_BORDERLESS,  # last resort, will be opaque
+    ):
+        try:
+            window = Window(
+                width=STAGE_W,
+                height=STAGE_H,
+                config=config,
+                style=style,
+                caption="meet_a_claw",
+                resizable=False,
+            )
+            print(f"[overlay] window style: {style}")
+            break
+        except pyglet.window.NoSuchConfigException:
+            continue
+    else:
+        # absolute fallback with no special config
+        window = Window(
+            width=STAGE_W, height=STAGE_H,
+            style=Window.WINDOW_STYLE_BORDERLESS,
+            caption="meet_a_claw", resizable=False,
+        )
+        print("[overlay] window style: default (no transparency available)")
     window.set_location(0, 0)
     return window
 
