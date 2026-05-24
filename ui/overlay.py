@@ -51,6 +51,22 @@ from watchdog.events import FileSystemEventHandler
 # fs.inotify.max_user_watches is already saturated by IDEs / dev tools.
 from watchdog.observers.polling import PollingObserver as Observer
 
+# X11 / Xlib bits used to make the overlay sit on the real desktop:
+#   - _NET_WM_STATE_ABOVE       always on top of regular windows
+#   - _NET_WM_STATE_SKIP_TASKBAR & _NET_WM_STATE_SKIP_PAGER
+#                              hide from alt-tab and taskbar
+#   - SHAPE extension (input)  empty input region except the gate, so
+#                              clicks pass through to the actual desktop
+#                              icons, browser, file manager, etc.
+try:
+    import Xlib.display
+    import Xlib.X
+    import Xlib.protocol.event
+    from Xlib.ext import shape as xshape
+    HAVE_XLIB = True
+except ImportError:
+    HAVE_XLIB = False
+
 SANDBOX_NAME = "hack-agent"
 SANDBOX_DESKTOP_PATH = "/sandbox/demo/desktop"
 
@@ -84,8 +100,11 @@ GATE_STATE_FILE = Path("/tmp/meet_a_claw-gate-state")
 SPRITE_SCALE = 2.0
 SPRITE_PX = int(72 * SPRITE_SCALE)
 
-STAGE_W = 1400
-STAGE_H = 240
+# Window is sized to the full screen at startup so the lobster can walk
+# across the user's real desktop, not just inside a 1400-wide rectangle.
+# Falls back to a generous size if the screen probe fails.
+STAGE_W = 1920
+STAGE_H = 1080
 
 WALK_DURATION_S = 1.8
 WALK_BOB_HEIGHT = 8
@@ -95,13 +114,15 @@ BOUNCE_DURATION_S = 0.55
 BOUNCE_RECOIL_PX = 80
 BOUNCE_WOBBLE_DEG = 18
 
-HOME_POS = (60, 100)
-TRASH_ZONE_X = STAGE_W * 0.82
-TRASH_ZONE_POS = (TRASH_ZONE_X, 100)
-GATE_X = STAGE_W * 0.72  # gate stands between lobster path and trash
+# These get re-computed at runtime once we know the real screen size.
+# Home is along the left edge, trash zone toward the right, gate just
+# in front of the trash so the lobster has to pass through it.
+HOME_POS = (200, 200)
+TRASH_ZONE_POS = (1600, 200)
+GATE_X = 1400
 GATE_WIDTH = 14
-GATE_HEIGHT = 160
-GATE_Y = (STAGE_H - GATE_HEIGHT) / 2
+GATE_HEIGHT = 280
+GATE_Y = 70
 
 GATE_COLOR_CLOSED = (220, 60, 60)
 GATE_COLOR_OPEN = (80, 200, 120)
@@ -484,32 +505,121 @@ def start_gate_watcher(state: GateState) -> Observer:
 
 
 def make_window() -> Window:
-    try:
-        config = pyglet.gl.Config(alpha_size=8, double_buffer=True)
-        window = Window(
-            width=STAGE_W,
-            height=STAGE_H,
-            config=config,
-            style=Window.WINDOW_STYLE_BORDERLESS,
-            caption="meet_a_claw",
-            resizable=False,
-        )
-    except pyglet.window.NoSuchConfigException:
-        window = Window(
-            width=STAGE_W,
-            height=STAGE_H,
-            style=Window.WINDOW_STYLE_BORDERLESS,
-            caption="meet_a_claw",
-            resizable=False,
-        )
-    window.set_location(40, 40)
+    """Borderless, transparent, full-screen overlay anchored at (0,0).
+    X11 atoms + SHAPE input region are applied in main() once the
+    window has a real X11 ID."""
+    config = pyglet.gl.Config(alpha_size=8, double_buffer=True)
+    window = Window(
+        width=STAGE_W,
+        height=STAGE_H,
+        config=config,
+        style=Window.WINDOW_STYLE_BORDERLESS,
+        caption="meet_a_claw",
+        resizable=False,
+    )
+    window.set_location(0, 0)
     return window
+
+
+def _pyglet_window_xid(window) -> int | None:
+    """Best-effort lookup of the underlying X11 window id from a pyglet
+    window. pyglet 2.x exposes it as either window._window or via
+    canvas.id depending on the platform plugin."""
+    for path in (
+        lambda w: w._window,
+        lambda w: w.canvas._window,
+        lambda w: w.context.canvas.window,
+        lambda w: w._native_handle,
+    ):
+        try:
+            xid = path(window)
+            if isinstance(xid, int) and xid > 0:
+                return xid
+        except (AttributeError, TypeError):
+            continue
+    return None
+
+
+def make_overlay_native_on_desktop(window, gate_rect_screen: tuple[int, int, int, int]) -> None:
+    """Promote the pyglet window to a click-through, always-on-top
+    desktop overlay using X11 atoms + SHAPE.
+
+    gate_rect_screen is (x, y, w, h) in screen coordinates (y from top),
+    the only region that catches clicks. Everything else passes through
+    to the desktop icons / app windows underneath.
+    """
+    if not HAVE_XLIB:
+        print("[overlay] python-xlib missing; running as a regular window", file=sys.stderr)
+        return
+
+    xid = _pyglet_window_xid(window)
+    if xid is None:
+        print("[overlay] could not locate pyglet's X11 window id; SHAPE skipped", file=sys.stderr)
+        return
+
+    xdisplay = Xlib.display.Display()
+    xwin = xdisplay.create_resource_object("window", xid)
+
+    NET_WM_STATE = xdisplay.intern_atom("_NET_WM_STATE")
+    ABOVE = xdisplay.intern_atom("_NET_WM_STATE_ABOVE")
+    SKIP_TASKBAR = xdisplay.intern_atom("_NET_WM_STATE_SKIP_TASKBAR")
+    SKIP_PAGER = xdisplay.intern_atom("_NET_WM_STATE_SKIP_PAGER")
+
+    # Single ClientMessage can carry up to 2 atoms via data[2] and data[3].
+    # Apply (ABOVE, SKIP_TASKBAR) and (SKIP_PAGER, 0) in two passes.
+    for atom_a, atom_b in [(ABOVE, SKIP_TASKBAR), (SKIP_PAGER, 0)]:
+        data = (32, [1, atom_a, atom_b, 0, 0])
+        ev = Xlib.protocol.event.ClientMessage(
+            window=xwin, client_type=NET_WM_STATE, data=data
+        )
+        xdisplay.send_event(
+            xdisplay.screen().root,
+            ev,
+            event_mask=Xlib.X.SubstructureRedirectMask | Xlib.X.SubstructureNotifyMask,
+        )
+    xdisplay.sync()
+
+    # SHAPE input: keep ONLY the gate region clickable; clicks anywhere
+    # else fall through to whatever is behind the overlay (desktop, file
+    # manager, browser, terminal). The gate rectangle is in pyglet's
+    # bottom-left-origin pixel space; SHAPE input wants top-left, which
+    # matches pyglet's set_location and the way Xlib reports things, so
+    # we pass it through unchanged.
+    gx, gy, gw, gh = gate_rect_screen
+    xshape.SetRectangles(
+        xwin,
+        operation=xshape.SO.Set,
+        ordering=0,  # Unsorted
+        x_offset=0,
+        y_offset=0,
+        rectangles=[(int(gx), int(gy), int(gw), int(gh))],
+        kind=xshape.SK.Input,
+    )
+    xdisplay.sync()
+    print(f"[overlay] X11 SHAPE input set to gate rect {gate_rect_screen}; rest click-through")
 
 
 def main() -> int:
     if not SPRITE_PATH.exists():
         print(f"sprite missing: {SPRITE_PATH}", file=sys.stderr)
         return 1
+
+    # Probe real screen size and re-anchor the lobster's geography so
+    # the demo scales to whatever the operator's monitor is.
+    global STAGE_W, STAGE_H, HOME_POS, TRASH_ZONE_POS, GATE_X, GATE_Y, GATE_HEIGHT
+    try:
+        _disp = pyglet.display.get_display()
+        _scr = _disp.get_default_screen()
+        STAGE_W = _scr.width
+        STAGE_H = _scr.height
+    except Exception:
+        pass  # keep defaults
+    HOME_POS = (max(160, int(STAGE_W * 0.10)), max(180, int(STAGE_H * 0.20)))
+    TRASH_ZONE_POS = (int(STAGE_W * 0.84), HOME_POS[1])
+    GATE_X = int(STAGE_W * 0.72)
+    GATE_HEIGHT = max(220, int(STAGE_H * 0.32))
+    GATE_Y = HOME_POS[1] - int(GATE_HEIGHT * 0.3)
+    print(f"[overlay] screen {STAGE_W}x{STAGE_H}; HOME={HOME_POS} TRASH={TRASH_ZONE_POS} GATE_X={GATE_X}")
 
     window = make_window()
     sprite_img = pyglet.image.load(str(SPRITE_PATH))
@@ -588,16 +698,16 @@ def main() -> int:
         color=initial_color,
     )
 
-    pyglet.gl.glClearColor(1.0, 0.97, 0.91, 1.0)
-    instr = pyglet.text.Label(
-        "click gate to toggle   |   SPACE: walk   R: home   B: bounce   P: pickup   D: drop   F: refresh   ESC: quit",
-        font_name="Sans", font_size=11, color=(80, 60, 40, 200),
-        x=12, y=STAGE_H - 18,
-    )
+    # Transparent background — the overlay literally sits on top of the
+    # user's real desktop now.
+    pyglet.gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+    # On-screen instructions live in the operator terminal now; the
+    # desktop overlay only shows the lobster, the gate, and a tiny
+    # mirror-status hint near the gate.
     mirror_label = pyglet.text.Label(
         "mirror: idle",
-        font_name="Sans", font_size=11, color=(80, 60, 40, 200),
-        x=STAGE_W - 12, y=STAGE_H - 18, anchor_x="right",
+        font_name="Sans", font_size=11, color=(40, 40, 40, 230),
+        x=GATE_X + 30, y=GATE_Y + GATE_HEIGHT + 30, anchor_x="left",
     )
     desktop_label = pyglet.text.Label(
         text=f"desktop: {len(available_files)} file(s)",
@@ -660,8 +770,6 @@ def main() -> int:
             carry_page.draw()
             carry_bg.draw()
             carry_label.draw()
-        instr.draw()
-        desktop_label.draw()
         mirror_label.draw()
 
     # Generous hitbox so the operator doesn't have to be pixel-perfect
@@ -727,11 +835,27 @@ def main() -> int:
                 mirror_label.text = "mirror: idle"
 
     pyglet.clock.schedule_interval(tick, 1 / 60)
-    print("meet_a_claw overlay — walk + gate watcher + click toggle + host mirror.")
+
+    # Promote to a click-through, always-on-top desktop overlay. SHAPE
+    # converts X11 coordinates (top-left origin), so we mirror y here:
+    # pyglet's gate is at (GATE_X, GATE_Y) in bottom-left-origin pixels.
+    gate_top = STAGE_H - GATE_Y - GATE_HEIGHT
+    # Generous padding so the operator can click the bar without missing.
+    pad = 30
+    make_overlay_native_on_desktop(
+        window,
+        gate_rect_screen=(
+            int(GATE_X) - pad,
+            int(gate_top) - pad,
+            int(GATE_WIDTH) + 2 * pad,
+            int(GATE_HEIGHT) + 2 * pad,
+        ),
+    )
+
+    print("meet_a_claw overlay — desktop-native (transparent, click-through except gate).")
     print(f"  gate state file:   {GATE_STATE_FILE}")
     print(f"  host demo desktop: {HOST_DEMO_DIR}")
-    print(f"  host destinations: { {k: str(v) for k, v in HOST_DEST.items()} }")
-    print("  click the gate (or SPACE/R/B/P/D/F/ESC keys) to drive the demo.")
+    print(f"  click the gate to toggle.  Keys (when overlay has focus): SPACE/R/B/P/D/F/ESC.")
     try:
         pyglet.app.run()
     finally:
