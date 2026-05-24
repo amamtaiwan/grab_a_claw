@@ -35,6 +35,7 @@ from __future__ import annotations
 import math
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -190,12 +191,16 @@ class LobsterState(Enum):
 @dataclass
 class PickupTask:
     """A queued real-file move: walk to icon, perform host mv, walk to
-    drop zone, drop. Phases are 'to_source' then 'to_dest'."""
+    drop zone, drop. Phases are 'to_source' then 'to_dest'.
+    do_host_op=False is for events that fired AFTER the host filesystem
+    already changed (e.g. agent did gio set directly) — then the lobster
+    only needs to animate, not re-do the host operation."""
     filename: str
     bucket: str
     source_pos: tuple[float, float]
     dest_pos: tuple[float, float]
     phase: str = "to_source"
+    do_host_op: bool = True
 
 
 @dataclass
@@ -491,6 +496,80 @@ def _mirror_file_on_host(filename: str, bucket: str) -> str:
         return f"move-fail:{e}"
 
 
+class DesktopWatcher(threading.Thread):
+    """Polls ~/Desktop for icon position changes and file removals that
+    the agent (or anyone else) did via gio set / gio trash directly.
+    Emits ('rearrange', filename, old_screen_pos, new_screen_pos) when an
+    icon moves, and ('vanished', filename, old_screen_pos) when a file
+    disappears from the top of ~/Desktop. The main loop turns each event
+    into a lobster walk.
+    """
+
+    POLL_INTERVAL_S = 1.5
+    CLAIM_WINDOW_S = 5.0  # SandboxMirror claims its filenames; we skip them
+
+    def __init__(self, event_queue: "queue.Queue", claims: dict):
+        super().__init__(name="DesktopWatcher", daemon=True)
+        self._stop = threading.Event()
+        self._queue = event_queue
+        self._claims = claims
+        self._last_positions: dict[str, tuple[int, int]] = {}
+        self._primed = False
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            current = self._snapshot()
+            now = time.time()
+            if self._primed:
+                for name, pos in current.items():
+                    last = self._last_positions.get(name)
+                    if last is not None and last != pos and not self._claimed(name, now):
+                        self._queue.put(("rearrange", name, last, pos))
+                for name, last in self._last_positions.items():
+                    if name not in current and not self._claimed(name, now):
+                        self._queue.put(("vanished", name, last))
+            self._last_positions = current
+            self._primed = True
+            self._stop.wait(self.POLL_INTERVAL_S)
+
+    def _claimed(self, name: str, now: float) -> bool:
+        ts = self._claims.get(name)
+        return ts is not None and (now - ts) < self.CLAIM_WINDOW_S
+
+    def _snapshot(self) -> dict[str, tuple[int, int]]:
+        positions: dict[str, tuple[int, int]] = {}
+        desktop = HOST_HOME / "Desktop"
+        try:
+            entries = list(desktop.iterdir())
+        except OSError:
+            return positions
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            pos = self._read_position(entry)
+            if pos is not None:
+                positions[entry.name] = pos
+        return positions
+
+    @staticmethod
+    def _read_position(path: Path) -> tuple[int, int] | None:
+        try:
+            out = subprocess.check_output(
+                ["gio", "info", str(path), "-a", "metadata::nautilus-icon-position"],
+                text=True, timeout=2, stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError):
+            return None
+        m = re.search(r"nautilus-icon-position:\s*(-?\d+),(-?\d+)", out)
+        if not m:
+            return None
+        return int(m.group(1)), int(m.group(2))
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
 class SandboxMirror(threading.Thread):
     """Polls the sandbox for newly-sorted / newly-trashed files. Instead
     of mirroring to the host immediately, pushes (bucket, filename)
@@ -503,7 +582,7 @@ class SandboxMirror(threading.Thread):
 
     POLL_INTERVAL_S = 1.5
 
-    def __init__(self, container_resolver, event_queue: "queue.Queue[tuple[str, str]]"):
+    def __init__(self, container_resolver, event_queue: "queue.Queue", claims: dict):
         super().__init__(name="SandboxMirror", daemon=True)
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -511,6 +590,9 @@ class SandboxMirror(threading.Thread):
         self.last_action: tuple[float, str] | None = None  # (timestamp, msg)
         self._resolver = container_resolver
         self._queue = event_queue
+        # Shared with DesktopWatcher so it knows which filenames sandbox
+        # already handled and won't double-animate the disappearance.
+        self._claims = claims
 
     def run(self) -> None:
         while not self._stop.is_set():
@@ -524,6 +606,7 @@ class SandboxMirror(threading.Thread):
                             if key_ in self._processed:
                                 continue
                             self._processed.add(key_)
+                        self._claims[filename] = time.time()
                         self._queue.put(("move", bucket, filename))
                 for filename in _docker_ls(container, SANDBOX_TRASH_PATH):
                     key_ = ("trash", filename)
@@ -531,6 +614,7 @@ class SandboxMirror(threading.Thread):
                         if key_ in self._processed:
                             continue
                         self._processed.add(key_)
+                    self._claims[filename] = time.time()
                     self._queue.put(("trash", "trash", filename))
             self._stop.wait(self.POLL_INTERVAL_S)
 
@@ -775,12 +859,15 @@ def main() -> int:
     gate_state = GateState()
     gate_observer = start_gate_watcher(gate_state)
 
-    # Mirror thread feeds the lobster's task queue with file-move
-    # intents; the main pyglet loop animates one at a time and runs
-    # the host-side mv at the moment the lobster reaches the icon.
-    mirror_queue: queue.Queue[tuple[str, str, str]] = queue.Queue()
-    mirror_thread = SandboxMirror(_find_sandbox_container, mirror_queue)
+    # Both watchers push into one event queue. claims is a shared dict
+    # the sandbox watcher uses to "claim" a filename so the desktop
+    # watcher doesn't fire a second animation for the same disappearance.
+    mirror_queue: queue.Queue = queue.Queue()
+    claims: dict[str, float] = {}
+    mirror_thread = SandboxMirror(_find_sandbox_container, mirror_queue, claims)
     mirror_thread.start()
+    desktop_watcher = DesktopWatcher(mirror_queue, claims)
+    desktop_watcher.start()
 
     # Drop zones in pyglet window-local coords. For sorted buckets, these
     # are the screen-coord positions of the actual folder icons that
@@ -793,22 +880,54 @@ def main() -> int:
         )
     DROP_ZONES["trash"] = TRASH_ZONE_POS
 
-    def begin_task_for_event(event: tuple[str, str, str]) -> None:
-        """Translate a mirror queue entry into a lobster pickup task."""
-        action, bucket, filename = event
-        source = icon_positions_pyglet.get(filename)
-        if source is None:
-            # No known icon position — do the mv silently and move on.
-            _ = _mirror_file_on_host(filename, bucket)
-            mirror_thread.report(f"{filename} → (no icon position; mirrored quietly)")
-            return
-        dest = DROP_ZONES.get(bucket, HOME_POS)
-        lobster.pickup_task = PickupTask(
-            filename=filename, bucket=bucket,
-            source_pos=source, dest_pos=dest, phase="to_source",
-        )
-        lobster.walk_to(source)
-        mirror_thread.report(f"{filename} → walking to {bucket}")
+    def _screen_to_pg(pos):
+        return screen_to_pyglet(pos[0], pos[1], margin_left, margin_top, STAGE_H, screen_h)
+
+    def begin_task_for_event(event: tuple) -> None:
+        """Translate a queued event into a lobster pickup task. Handles
+        four kinds:
+          ('move', bucket, filename)         — sandbox mirror, sort bucket
+          ('trash', 'trash', filename)       — sandbox mirror, trashed
+          ('rearrange', name, old_xy, new_xy)— agent did gio set; we just animate
+          ('vanished', name, old_xy)         — agent removed file; animate to trash zone
+        """
+        kind = event[0]
+        if kind in ("move", "trash"):
+            _, bucket, filename = event
+            source = icon_positions_pyglet.get(filename)
+            if source is None:
+                _ = _mirror_file_on_host(filename, bucket)
+                mirror_thread.report(f"{filename} → (no icon position; quiet mirror)")
+                return
+            dest = DROP_ZONES.get(bucket, HOME_POS)
+            lobster.pickup_task = PickupTask(
+                filename=filename, bucket=bucket,
+                source_pos=source, dest_pos=dest, phase="to_source",
+                do_host_op=True,
+            )
+            lobster.walk_to(source)
+            mirror_thread.report(f"{filename} → walking to {bucket}")
+        elif kind == "rearrange":
+            _, filename, old_xy, new_xy = event
+            source = _screen_to_pg(old_xy)
+            dest = _screen_to_pg(new_xy)
+            lobster.pickup_task = PickupTask(
+                filename=filename, bucket="rearrange",
+                source_pos=source, dest_pos=dest, phase="to_source",
+                do_host_op=False,  # agent already moved the icon
+            )
+            lobster.walk_to(source)
+            mirror_thread.report(f"{filename} → rearranged on desktop")
+        elif kind == "vanished":
+            _, filename, old_xy = event
+            source = _screen_to_pg(old_xy)
+            lobster.pickup_task = PickupTask(
+                filename=filename, bucket="trash",
+                source_pos=source, dest_pos=DROP_ZONES["trash"], phase="to_source",
+                do_host_op=False,  # already deleted on host
+            )
+            lobster.walk_to(source)
+            mirror_thread.report(f"{filename} → vanished (lobster animates after the fact)")
 
     # Path to the grant/revoke scripts so a click on the gate runs them.
     REPO_DIR = HERE.parent
@@ -1005,8 +1124,9 @@ def main() -> int:
         if lobster.state == LobsterState.IDLE and lobster.pickup_task is not None:
             task = lobster.pickup_task
             if task.phase == "to_source":
-                status = _mirror_file_on_host(task.filename, task.bucket)
-                mirror_thread.report(f"{task.filename} → {status}")
+                if task.do_host_op:
+                    status = _mirror_file_on_host(task.filename, task.bucket)
+                    mirror_thread.report(f"{task.filename} → {status}")
                 lobster.pickup(task.filename)
                 task.phase = "to_dest"
                 lobster.walk_to(task.dest_pos)
@@ -1061,6 +1181,8 @@ def main() -> int:
         gate_observer.join(timeout=2.0)
         mirror_thread.stop()
         mirror_thread.join(timeout=2.0)
+        desktop_watcher.stop()
+        desktop_watcher.join(timeout=2.0)
     return 0
 
 
