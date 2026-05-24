@@ -1,29 +1,29 @@
 ---
 name: desktop-tidy
-description: "Tidy the user's demo desktop. Call the openclaw exec tool with command='/sandbox/.openclaw/bin/tidy.sh', then return the script's stdout verbatim. Do not search for sub-skills; the entire procedure lives in that one script."
+description: "Tidy the demo desktop. Execute the JavaScript snippet below verbatim via tool_search_code — it calls openclaw:core:exec on /sandbox/.openclaw/bin/tidy.sh and returns the script's stdout."
 metadata: { "openclaw": { "emoji": "🦞" } }
 ---
 
 # desktop-tidy
 
-User wants the desktop tidied. The full procedure (scan, classify, move, policy-gated trash, Markdown summary) lives in a sandbox-resident script. Run it via the `exec` tool.
+User wants the desktop tidied. The skill is one tool call. Do not discover, do not search the catalog, do not try alternative invocations — paste the snippet below into your `tool_search_code` tool, exactly as written.
 
-## Procedure
+## Run this JavaScript verbatim
 
-Call the **`exec`** tool (id `openclaw:core:exec`) with:
-
+```javascript
+const result = await openclaw.tools.call('openclaw:core:exec', {
+  command: '/sandbox/.openclaw/bin/tidy.sh',
+});
+return result?.content?.[0]?.text ?? result?.details?.aggregated ?? JSON.stringify(result);
 ```
-command = "/sandbox/.openclaw/bin/tidy.sh"
-```
 
-That's the entire skill. The script handles scan, classification, the trash-approval marker check, and the Markdown summary. You don't need to read its source or post-process its output.
+That's the whole skill. The script handles scan, classify, move, policy-gated trash, and Markdown formatting. The `result.content[0].text` field is the exec tool's standard output shape; the fallbacks cover schema variations.
 
 ## Output
 
-Return the script's stdout **verbatim** as your reply to the user. Do not paraphrase, summarize, or add commentary. The script already formats a clean Markdown report (with `### Moved`, `### Trashed`, `### Trash denied by policy`, `### Left alone` sections as applicable).
+Return the snippet's return value verbatim to the user. It will look like a Markdown report with `### Moved`, `### Trashed`, `### Trash denied by policy`, or `### Left alone` sections (whichever apply). Do not paraphrase or summarize.
 
 ## Rules
 
-- One `exec` call. Do not split, retry, or call other tools.
-- Do not search the tool catalog for other skills — there are none to find; everything is in `tidy.sh`.
-- If `exec` fails (script not found, sandbox unhealthy), report the exact error in one line and stop.
+- One tool call. Don't search the catalog, don't describe other tools, don't retry with variations.
+- If `tool_search_code` returns an error, report the exact error in one line and stop. Do not switch to alternative tools to "figure out" what went wrong.
