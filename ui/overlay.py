@@ -585,9 +585,11 @@ def make_overlay_native_on_desktop(window, gate_rect_screen: tuple[int, int, int
     # bottom-left-origin pixel space; SHAPE input wants top-left, which
     # matches pyglet's set_location and the way Xlib reports things, so
     # we pass it through unchanged.
+    #
+    # python-xlib exposes the request as a method on the Window object
+    # (shape_rectangles), not as a module-level SetRectangles call.
     gx, gy, gw, gh = gate_rect_screen
-    xshape.SetRectangles(
-        xwin,
+    xwin.shape_rectangles(
         operation=xshape.SO.Set,
         ordering=0,  # Unsorted
         x_offset=0,
