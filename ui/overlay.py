@@ -103,6 +103,7 @@ def screen_to_pyglet(sx: int, sy: int, window_origin_x: int, window_origin_y: in
 SANDBOX_NAME = "hack-agent"
 SANDBOX_DESKTOP_PATH = "/sandbox/demo/desktop"
 SANDBOX_DENIED_FILE = "/sandbox/.openclaw/state/last-tidy-denied.txt"
+SANDBOX_INTENT_FILE = "/sandbox/.openclaw/state/desktop-intents.jsonl"
 
 # Where on the host the demo files live. pre-demo.sh plants the same 7
 # files DIRECTLY on the user's ~/Desktop (top level) so they appear as
@@ -497,6 +498,106 @@ def _mirror_file_on_host(filename: str, bucket: str) -> str:
         return f"move-fail:{e}"
 
 
+class DesktopArrangeBroker(threading.Thread):
+    """Polls the sandbox-internal intent file
+    (/sandbox/.openclaw/state/desktop-intents.jsonl). Each new JSON line
+    is one intent the agent queued via the desktop-arrange skill — we
+    execute the host-side equivalent here. Trash intents are gated on
+    /tmp/meet_a_claw-gate-state; closed → bounce event, no host op.
+
+    Architecture: sandbox proposes, host (this thread) disposes. No
+    host filesystem is ever touched from inside the sandbox. The
+    DesktopWatcher below catches the resulting position changes /
+    removals and pushes them into the lobster animation queue.
+    """
+
+    POLL_INTERVAL_S = 1.0
+    GATE_FILE = Path("/tmp/meet_a_claw-gate-state")
+
+    def __init__(self, container_resolver, event_queue: "queue.Queue"):
+        super().__init__(name="DesktopArrangeBroker", daemon=True)
+        self._stop = threading.Event()
+        self._resolver = container_resolver
+        self._queue = event_queue
+        self._processed_lines = 0
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            container = self._resolver()
+            if container:
+                lines = self._read_intents(container)
+                if len(lines) > self._processed_lines:
+                    for line in lines[self._processed_lines:]:
+                        self._handle_line(line)
+                    self._processed_lines = len(lines)
+            self._stop.wait(self.POLL_INTERVAL_S)
+
+    @staticmethod
+    def _read_intents(container: str) -> list[str]:
+        try:
+            out = subprocess.check_output(
+                ["docker", "exec", "--user", "sandbox", container,
+                 "cat", SANDBOX_INTENT_FILE],
+                text=True, timeout=3, stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError):
+            return []
+        return [line for line in out.splitlines() if line.strip()]
+
+    def reset_cursor(self) -> None:
+        """Call after pre-demo.sh wipes the intent file so the broker
+        starts re-reading from line 0."""
+        self._processed_lines = 0
+
+    def _handle_line(self, line: str) -> None:
+        try:
+            intent = json.loads(line)
+        except json.JSONDecodeError:
+            print(f"[broker] bad JSON line ignored: {line!r}", file=sys.stderr)
+            return
+        action = intent.get("action")
+        filename = intent.get("file")
+        if not action or not filename:
+            print(f"[broker] missing action/file: {intent}", file=sys.stderr)
+            return
+        path = HOST_HOME / "Desktop" / filename
+        if action == "set_position":
+            x = intent.get("x")
+            y = intent.get("y")
+            if x is None or y is None:
+                return
+            try:
+                subprocess.run(
+                    ["gio", "set", str(path), "metadata::nautilus-icon-position", f"{x},{y}"],
+                    timeout=3, check=False,
+                )
+                print(f"[broker] set_position {filename} → ({x},{y})")
+            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                print(f"[broker] set_position failed: {e}", file=sys.stderr)
+        elif action == "trash":
+            state = ""
+            try:
+                state = self.GATE_FILE.read_text().strip()
+            except (OSError, FileNotFoundError):
+                state = "closed"
+            if state != "open":
+                # Closed gate → emit denied animation; don't touch host.
+                self._queue.put(("denied", filename))
+                print(f"[broker] trash {filename} BLOCKED (gate closed) — denied event queued")
+                return
+            try:
+                subprocess.run(["gio", "trash", str(path)], timeout=3, check=False)
+                print(f"[broker] trash {filename} → host trash (gate was open)")
+            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                print(f"[broker] trash failed: {e}", file=sys.stderr)
+        else:
+            print(f"[broker] unknown action {action!r}: {intent}", file=sys.stderr)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
 class DesktopWatcher(threading.Thread):
     """Polls ~/Desktop for icon position changes and file removals that
     the agent (or anyone else) did via gio set / gio trash directly.
@@ -885,13 +986,25 @@ def main() -> int:
     gate_state = GateState()
     gate_observer = start_gate_watcher(gate_state)
 
-    # Both watchers push into one event queue. claims is a shared dict
-    # the sandbox watcher uses to "claim" a filename so the desktop
-    # watcher doesn't fire a second animation for the same disappearance.
+    # Three threads push into one event queue:
+    #   - SandboxMirror: sandbox tidy.sh moves files inside the sandbox;
+    #     we mirror to host buckets via shutil.move and emit move/trash
+    #     events tied to known icon positions.
+    #   - DesktopArrangeBroker: agent's desktop-arrange skill queues
+    #     intents inside the sandbox; broker reads them and runs gio set
+    #     / gio trash on the host (gate-checked).
+    #   - DesktopWatcher: catches resulting ~/Desktop position changes
+    #     and removals (from broker actions OR anything else) and emits
+    #     rearrange / vanished events for the lobster to animate.
+    # claims is shared between the mirror and the desktop watcher so the
+    # watcher doesn't fire a second animation when sandbox mirror
+    # already accounted for a filename.
     mirror_queue: queue.Queue = queue.Queue()
     claims: dict[str, float] = {}
     mirror_thread = SandboxMirror(_find_sandbox_container, mirror_queue, claims)
     mirror_thread.start()
+    arrange_broker = DesktopArrangeBroker(_find_sandbox_container, mirror_queue)
+    arrange_broker.start()
     desktop_watcher = DesktopWatcher(mirror_queue, claims)
     desktop_watcher.start()
 
@@ -1225,6 +1338,8 @@ def main() -> int:
         gate_observer.join(timeout=2.0)
         mirror_thread.stop()
         mirror_thread.join(timeout=2.0)
+        arrange_broker.stop()
+        arrange_broker.join(timeout=2.0)
         desktop_watcher.stop()
         desktop_watcher.join(timeout=2.0)
     return 0

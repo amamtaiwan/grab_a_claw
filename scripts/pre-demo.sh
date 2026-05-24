@@ -35,6 +35,15 @@ STASH_DIR="$STASH_ROOT/$(date +%Y%m%d-%H%M%S)"
 STASH_POINTER="$HOME/.meet_a_claw-last-stash"
 POSITIONS_FILE="/tmp/meet_a_claw-positions.json"
 
+hr "0_pre. wipe sandbox-internal state from previous takes (intents, denied list)"
+SBX_CONTAINER=$(docker ps --filter "name=openshell-$SANDBOX" --format '{{.Names}}' | head -1)
+if [ -n "$SBX_CONTAINER" ]; then
+  docker exec --user sandbox "$SBX_CONTAINER" bash -c 'mkdir -p /sandbox/.openclaw/state; rm -f /sandbox/.openclaw/state/desktop-intents.jsonl /sandbox/.openclaw/state/last-tidy-denied.txt /sandbox/.openclaw/state/desktop-files.txt; touch /sandbox/.openclaw/state/desktop-intents.jsonl' 2>/dev/null || true
+  ok "sandbox state cleared"
+else
+  warn "no sandbox container yet; state wipe skipped"
+fi
+
 hr "0a. clean up any leftover demo files from previous takes"
 # Removes demo-file NAMES (only the ones we plant) from each destination
 # we mirror into. We never touch any of the user's real files.
@@ -106,6 +115,13 @@ done
 echo "]" >> "$POSITIONS_FILE"
 ok "planted $N demo files; positions written to $POSITIONS_FILE"
 echo "   (right-click desktop → Refresh / press F5 if icons don't appear immediately)"
+
+# Also publish the desktop file list inside the sandbox so the
+# desktop-arrange agent can read it (it cannot ls the host directly).
+if [ -n "$SBX_CONTAINER" ]; then
+  printf '%s\n' "${DEMO_FILES[@]}" | docker exec --user sandbox -i "$SBX_CONTAINER" \
+    bash -c 'cat > /sandbox/.openclaw/state/desktop-files.txt' 2>/dev/null || true
+fi
 
 hr "0d. create 5 sorted folders on ~/Desktop with explicit ding positions"
 # Sibling folders ON the desktop so the audience sees both the original
