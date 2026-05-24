@@ -68,16 +68,51 @@ try:
 except ImportError:
     HAVE_XLIB = False
 
+import json
+
+
+def load_icon_positions() -> dict[str, tuple[int, int]]:
+    """Read screen-coordinate icon positions written by pre-demo.sh.
+    Returns {filename: (screen_x, screen_y)} where screen coords are
+    top-left-origin (the format gio / ding use)."""
+    if not POSITIONS_FILE.exists():
+        return {}
+    try:
+        items = json.loads(POSITIONS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {
+        item["name"]: (int(item["screen_x"]), int(item["screen_y"]))
+        for item in items
+        if "name" in item and "screen_x" in item and "screen_y" in item
+    }
+
+
+def screen_to_pyglet(sx: int, sy: int, window_origin_x: int, window_origin_y: int,
+                     window_h: int, screen_h: int) -> tuple[float, float]:
+    """Convert a screen (top-left-origin) coord to a pyglet
+    (bottom-left-origin) coord inside our overlay window."""
+    px = sx - window_origin_x
+    # screen_y is measured from top; pyglet y is measured from bottom
+    # of the window. Window bottom in screen coords = window_origin_y + window_h.
+    py = (window_origin_y + window_h) - sy
+    return px, py
+
 SANDBOX_NAME = "hack-agent"
 SANDBOX_DESKTOP_PATH = "/sandbox/demo/desktop"
 
 # Where on the host the demo files live. pre-demo.sh plants the same 7
-# files here that it plants inside the sandbox; when the agent moves a
-# file inside the sandbox the corresponding host-side file is mirrored
-# into the matching dest directory below (so the audience sees their
-# real Desktop empty out in real time).
+# files DIRECTLY on the user's ~/Desktop (top level) so they appear as
+# real desktop icons with positions set via gio metadata. When the agent
+# moves a file inside the sandbox, the corresponding host-side file is
+# mirrored from ~/Desktop into the matching dest directory below — the
+# audience sees real desktop icons drain in real time.
 HOST_HOME = Path.home()
-HOST_DEMO_DIR = HOST_HOME / "Desktop" / "meet_a_claw-demo"
+HOST_DEMO_DIR = HOST_HOME / "Desktop"
+
+# JSON file written by scripts/pre-demo.sh with the screen-coord
+# position of each planted demo icon. Lobster walks to those positions.
+POSITIONS_FILE = Path("/tmp/meet_a_claw-positions.json")
 
 # Where mirrored files end up on the host. Categories match the
 # sandbox-internal sorted/ layout that tidy.sh writes into.
@@ -678,6 +713,20 @@ def main() -> int:
     print(f"[overlay] stage    {STAGE_W}x{STAGE_H} at ({margin_left},{margin_top}); HOME={HOME_POS} TRASH={TRASH_ZONE_POS} GATE_X={GATE_X}")
 
     window = make_window(origin_x=margin_left, origin_y=margin_top, width=STAGE_W, height=STAGE_H)
+
+    # Convert per-icon screen positions (from pre-demo.sh) into
+    # pyglet-window coordinates so the lobster can walk straight to them.
+    icon_positions_screen = load_icon_positions()
+    icon_positions_pyglet: dict[str, tuple[float, float]] = {}
+    for name, (sx, sy) in icon_positions_screen.items():
+        icon_positions_pyglet[name] = screen_to_pyglet(
+            sx, sy, margin_left, margin_top, STAGE_H, screen_h,
+        )
+    if icon_positions_pyglet:
+        print(f"[overlay] loaded {len(icon_positions_pyglet)} icon positions; e.g. "
+              f"{next(iter(icon_positions_pyglet.items()))}")
+    else:
+        print("[overlay] no icon positions JSON (run scripts/pre-demo.sh)")
     sprite_img = pyglet.image.load(str(SPRITE_PATH))
     sprite_img.anchor_x = sprite_img.width // 2
     sprite_img.anchor_y = sprite_img.height // 2

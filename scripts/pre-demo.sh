@@ -27,9 +27,13 @@ hr() { printf "\n\033[36m── %s ──\033[0m\n" "$*"; }
 warn() { printf "\033[33m! %s\033[0m\n" "$*"; }
 ok() { printf "\033[32m✓ %s\033[0m\n" "$*"; }
 
-HOST_DEMO_DIR="$HOME/Desktop/meet_a_claw-demo"
+HOST_DESKTOP="$HOME/Desktop"
 DEMO_FILES=(screenshot_2026-05-20.png old_disk.iso draft.pdf temp_notes.tmp tax_receipts_2024.zip random.log empty_file.txt)
 HOST_DESTS=("$HOME/Pictures" "$HOME/Documents" "$HOME/Downloads" "$HOME/Videos" "$HOME/Documents/code")
+STASH_ROOT="$HOME/.meet_a_claw-stash"
+STASH_DIR="$STASH_ROOT/$(date +%Y%m%d-%H%M%S)"
+STASH_POINTER="$HOME/.meet_a_claw-last-stash"
+POSITIONS_FILE="/tmp/meet_a_claw-positions.json"
 
 hr "0a. clean up any leftover demo files from previous takes"
 # Removes demo-file NAMES (only the ones we plant) from each destination
@@ -40,22 +44,68 @@ for dest in "${HOST_DESTS[@]}"; do
     [ -f "$dest/$name" ] && rm -f "$dest/$name" && echo "  rm $dest/$name"
   done
 done
+# Also clear any leftover demo files at the desktop top level (from a
+# previous run that didn't post-demo cleanly).
+for name in "${DEMO_FILES[@]}"; do
+  [ -f "$HOST_DESKTOP/$name" ] && rm -f "$HOST_DESKTOP/$name" && echo "  rm $HOST_DESKTOP/$name"
+done
 ok "host destinations swept"
 
-hr "0b. replant host-side demo desktop at $HOST_DEMO_DIR"
-mkdir -p "$HOST_DEMO_DIR"
-rm -f "$HOST_DEMO_DIR"/* 2>/dev/null
-for name in "${DEMO_FILES[@]}"; do
-  touch "$HOST_DEMO_DIR/$name"
+hr "0b. stash existing top-level desktop files (run post-demo.sh to restore)"
+# Only move regular files at the top level of ~/Desktop. Subfolders
+# (including ~/Desktop/meet_a_claw-demo if it exists from old takes) are
+# left alone. Symlinks count as files — we stash them too. NOTHING
+# touches subfolders.
+mkdir -p "$STASH_DIR"
+stashed=0
+for f in "$HOST_DESKTOP"/*; do
+  [ -e "$f" ] || continue
+  if [ -d "$f" ] && [ ! -L "$f" ]; then
+    continue  # leave subfolders in place
+  fi
+  mv "$f" "$STASH_DIR/" 2>/dev/null && stashed=$((stashed + 1))
 done
-head -c 1024   /dev/urandom > "$HOST_DEMO_DIR/screenshot_2026-05-20.png"
-head -c 524288 /dev/urandom > "$HOST_DEMO_DIR/old_disk.iso"
-head -c 4096   /dev/urandom > "$HOST_DEMO_DIR/draft.pdf"
-head -c 200    /dev/urandom > "$HOST_DEMO_DIR/temp_notes.tmp"
-head -c 8192   /dev/urandom > "$HOST_DEMO_DIR/tax_receipts_2024.zip"
-touch -d "2024-01-15" "$HOST_DEMO_DIR/old_disk.iso"
-touch -d "2023-12-01" "$HOST_DEMO_DIR/random.log"
-ok "host demo desktop has $(ls "$HOST_DEMO_DIR" | wc -l) files"
+echo "$STASH_DIR" > "$STASH_POINTER"
+ok "stashed $stashed item(s) to $STASH_DIR"
+
+hr "0c. plant 7 demo files directly on ~/Desktop with explicit ding positions"
+SCREEN_W=$(xdpyinfo 2>/dev/null | awk '/dimensions:/{print $2}' | cut -dx -f1)
+[ -z "$SCREEN_W" ] && SCREEN_W=1920
+SCREEN_H=$(xdpyinfo 2>/dev/null | awk '/dimensions:/{print $2}' | cut -dx -f2)
+[ -z "$SCREEN_H" ] && SCREEN_H=1080
+# Layout: a horizontal row of 7 icons near the top of the desktop, leaving
+# the lower 2/3 clear for the lobster to walk in.
+ICON_ROW_Y=180
+SIDE_MARGIN=180
+USABLE_W=$((SCREEN_W - 2 * SIDE_MARGIN))
+N=${#DEMO_FILES[@]}
+SPACING=$((USABLE_W / (N - 1)))
+
+echo "[" > "$POSITIONS_FILE"
+sep=""
+for i in "${!DEMO_FILES[@]}"; do
+  name="${DEMO_FILES[$i]}"
+  target="$HOST_DESKTOP/$name"
+  touch "$target"
+  icon_x=$((SIDE_MARGIN + i * SPACING))
+  case "$name" in
+    screenshot_2026-05-20.png) head -c 1024   /dev/urandom > "$target" ;;
+    old_disk.iso)              head -c 524288 /dev/urandom > "$target"; touch -d "2024-01-15" "$target" ;;
+    draft.pdf)                 head -c 4096   /dev/urandom > "$target" ;;
+    temp_notes.tmp)            head -c 200    /dev/urandom > "$target" ;;
+    tax_receipts_2024.zip)     head -c 8192   /dev/urandom > "$target" ;;
+    random.log)                touch -d "2023-12-01" "$target" ;;
+  esac
+  # Both the legacy nautilus key and the newer ding key — set both for
+  # belt-and-braces compatibility with ding versions in the wild.
+  gio set "$target" metadata::nautilus-icon-position "${icon_x},${ICON_ROW_Y}"      2>/dev/null || true
+  gio set "$target" metadata::desktopfile-icon-position "${icon_x},${ICON_ROW_Y}"   2>/dev/null || true
+  printf '%s  {"name": "%s", "screen_x": %s, "screen_y": %s}\n' "$sep" "$name" "$icon_x" "$ICON_ROW_Y" >> "$POSITIONS_FILE"
+  sep=","
+done
+echo "]" >> "$POSITIONS_FILE"
+ok "planted $N demo files; positions written to $POSITIONS_FILE"
+echo "   (right-click desktop → Refresh / press F5 if icons don't appear immediately)"
 
 # Pre-create dest dirs so the first mirror has somewhere to land.
 for dest in "${HOST_DESTS[@]}"; do
