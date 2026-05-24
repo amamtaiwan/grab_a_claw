@@ -33,6 +33,8 @@ Run:
 from __future__ import annotations
 
 import math
+import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -43,7 +45,7 @@ from pathlib import Path
 
 import pyglet
 from pyglet import shapes
-from pyglet.window import Window, key
+from pyglet.window import Window, key, mouse
 from watchdog.events import FileSystemEventHandler
 # PollingObserver avoids inotify so we keep working on machines where
 # fs.inotify.max_user_watches is already saturated by IDEs / dev tools.
@@ -51,6 +53,29 @@ from watchdog.observers.polling import PollingObserver as Observer
 
 SANDBOX_NAME = "hack-agent"
 SANDBOX_DESKTOP_PATH = "/sandbox/demo/desktop"
+
+# Where on the host the demo files live. pre-demo.sh plants the same 7
+# files here that it plants inside the sandbox; when the agent moves a
+# file inside the sandbox the corresponding host-side file is mirrored
+# into the matching dest directory below (so the audience sees their
+# real Desktop empty out in real time).
+HOST_HOME = Path.home()
+HOST_DEMO_DIR = HOST_HOME / "Desktop" / "meet_a_claw-demo"
+
+# Where mirrored files end up on the host. Categories match the
+# sandbox-internal sorted/ layout that tidy.sh writes into.
+HOST_DEST = {
+    "images": HOST_HOME / "Pictures",
+    "documents": HOST_HOME / "Documents",
+    "archives": HOST_HOME / "Downloads",
+    "code": HOST_HOME / "Documents" / "code",
+    "media": HOST_HOME / "Videos",
+}
+# Sandbox paths we poll for new arrivals.
+SANDBOX_SORTED_BUCKETS = [
+    f"/sandbox/demo/sorted/{name}" for name in HOST_DEST.keys()
+]
+SANDBOX_TRASH_PATH = "/sandbox/.openclaw/trash"
 
 HERE = Path(__file__).resolve().parent
 SPRITE_PATH = HERE / "assets" / "sprites" / "lobster_72.png"
@@ -277,6 +302,107 @@ def list_sandbox_desktop() -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
+def _docker_ls(container: str, path: str) -> list[str]:
+    try:
+        out = subprocess.check_output(
+            ["docker", "exec", "--user", "sandbox", container, "ls", "-1", path],
+            text=True, timeout=3, stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _mirror_file_on_host(filename: str, bucket: str) -> str:
+    """Apply a sandbox-detected move to the host's demo desktop. Returns a
+    short status string for logging. Idempotent: if the source file is
+    already missing, returns 'gone'."""
+    src = HOST_DEMO_DIR / filename
+    if not src.exists():
+        return "gone"
+    if bucket == "trash":
+        # Prefer XDG trash via gio when available, fall back to outright
+        # rm if the host doesn't ship gio (rare on Linux desktops).
+        if shutil.which("gio"):
+            try:
+                subprocess.run(["gio", "trash", str(src)], check=False, timeout=5)
+                return "trashed (gio)"
+            except subprocess.TimeoutExpired:
+                pass
+        try:
+            src.unlink()
+            return "trashed (unlink)"
+        except OSError as e:
+            return f"trash-fail:{e}"
+    dest_dir = HOST_DEST.get(bucket)
+    if dest_dir is None:
+        return f"unknown-bucket:{bucket}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / filename
+    try:
+        shutil.move(str(src), str(dest))
+        return f"moved → {dest_dir.name}/"
+    except OSError as e:
+        return f"move-fail:{e}"
+
+
+class SandboxMirror(threading.Thread):
+    """Polls the sandbox for newly-sorted / newly-trashed files and
+    mirrors the equivalent action on the host's demo desktop. Runs as a
+    daemon thread; main loop reads its log queue for UI status.
+    """
+
+    POLL_INTERVAL_S = 1.5
+
+    def __init__(self, container_resolver):
+        super().__init__(name="SandboxMirror", daemon=True)
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._processed: set[tuple[str, str]] = set()
+        self.last_action: tuple[float, str] | None = None  # (timestamp, msg)
+        self._resolver = container_resolver  # callable returning current container
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            container = self._resolver()
+            if container:
+                # Sorted buckets.
+                for path in SANDBOX_SORTED_BUCKETS:
+                    bucket = Path(path).name
+                    for filename in _docker_ls(container, path):
+                        key_ = (bucket, filename)
+                        if key_ in self._processed:
+                            continue
+                        status = _mirror_file_on_host(filename, bucket)
+                        with self._lock:
+                            self._processed.add(key_)
+                            self.last_action = (time.time(), f"{filename} → {status}")
+                # Trash.
+                for filename in _docker_ls(container, SANDBOX_TRASH_PATH):
+                    key_ = ("trash", filename)
+                    if key_ in self._processed:
+                        continue
+                    status = _mirror_file_on_host(filename, "trash")
+                    with self._lock:
+                        self._processed.add(key_)
+                        self.last_action = (time.time(), f"{filename} → {status}")
+            self._stop.wait(self.POLL_INTERVAL_S)
+
+    def reset(self) -> None:
+        """Clear processed-file cache. Call from pre-demo / on operator
+        manual reset so a fresh round of files isn't filtered out."""
+        with self._lock:
+            self._processed.clear()
+            self.last_action = None
+
+    def consume_last_action(self) -> tuple[float, str] | None:
+        with self._lock:
+            return self.last_action
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
 class _GateFileHandler(FileSystemEventHandler):
     def __init__(self, state: GateState) -> None:
         self.state = state
@@ -343,6 +469,33 @@ def main() -> int:
     gate_state = GateState()
     gate_observer = start_gate_watcher(gate_state)
 
+    # Container resolver — re-checked on each poll so a sandbox restart
+    # while the overlay is running doesn't break mirroring.
+    mirror_thread = SandboxMirror(_find_sandbox_container)
+    mirror_thread.start()
+
+    # Path to the grant/revoke scripts so a click on the gate runs them.
+    REPO_DIR = HERE.parent
+    GRANT_SCRIPT = REPO_DIR / "policies" / "grant-trash.sh"
+    REVOKE_SCRIPT = REPO_DIR / "policies" / "revoke-trash.sh"
+
+    def toggle_gate_from_click():
+        target = REVOKE_SCRIPT if gate_state.is_open else GRANT_SCRIPT
+        if not target.exists():
+            print(f"[click-gate] script missing: {target}", file=sys.stderr)
+            return
+        # Spawn detached — don't block the UI thread on the subprocess.
+        try:
+            subprocess.Popen(
+                [str(target), SANDBOX_NAME],
+                cwd=str(REPO_DIR),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print(f"[click-gate] triggered {target.name}")
+        except OSError as e:
+            print(f"[click-gate] {target.name} spawn failed: {e}", file=sys.stderr)
+
     # Carried-file visual: a single page rectangle + text label above.
     # System fonts on this box don't ship color emoji, so we draw the
     # icon ourselves instead of relying on 📄.
@@ -375,9 +528,14 @@ def main() -> int:
 
     pyglet.gl.glClearColor(1.0, 0.97, 0.91, 1.0)
     instr = pyglet.text.Label(
-        "SPACE: walk to trash   R: home   B: bounce   P: pick up   D: drop   F: refresh   ESC: quit",
+        "click gate to toggle   |   SPACE: walk   R: home   B: bounce   P: pickup   D: drop   F: refresh   ESC: quit",
         font_name="Sans", font_size=11, color=(80, 60, 40, 200),
         x=12, y=STAGE_H - 18,
+    )
+    mirror_label = pyglet.text.Label(
+        "mirror: idle",
+        font_name="Sans", font_size=11, color=(80, 60, 40, 200),
+        x=STAGE_W - 12, y=STAGE_H - 18, anchor_x="right",
     )
     desktop_label = pyglet.text.Label(
         text=f"desktop: {len(available_files)} file(s)",
@@ -388,17 +546,17 @@ def main() -> int:
     def refresh_desktop_label() -> None:
         desktop_label.text = f"desktop: {len(available_files)} file(s)"
     gate_label = pyglet.text.Label(
-        "gate: CLOSED", font_name="Sans", font_size=11, color=(80, 60, 40, 200),
+        "gate: CLOSED (click to open)", font_name="Sans", font_size=11, color=(80, 60, 40, 200),
         x=GATE_X - 110, y=GATE_Y + GATE_HEIGHT + 8,
     )
 
     def refresh_gate_label_and_color() -> None:
         if gate_state.is_open:
             gate_shape.color = GATE_COLOR_OPEN
-            gate_label.text = "gate: OPEN"
+            gate_label.text = "gate: OPEN (click to close)"
         else:
             gate_shape.color = GATE_COLOR_CLOSED
-            gate_label.text = "gate: CLOSED"
+            gate_label.text = "gate: CLOSED (click to open)"
 
     refresh_gate_label_and_color()
 
@@ -435,6 +593,21 @@ def main() -> int:
             carry_label.draw()
         instr.draw()
         desktop_label.draw()
+        mirror_label.draw()
+
+    # Generous hitbox so the operator doesn't have to be pixel-perfect
+    # during a live demo. 20-pixel padding on each side of the gate bar.
+    GATE_CLICK_PAD = 20
+
+    @window.event
+    def on_mouse_press(x, y, button, modifiers):
+        if button != mouse.LEFT:
+            return
+        if not (GATE_X - GATE_CLICK_PAD <= x <= GATE_X + GATE_WIDTH + GATE_CLICK_PAD):
+            return
+        if not (GATE_Y - GATE_CLICK_PAD <= y <= GATE_Y + GATE_HEIGHT + GATE_CLICK_PAD):
+            return
+        toggle_gate_from_click()
 
     @window.event
     def on_key_press(symbol, modifiers):
@@ -472,16 +645,29 @@ def main() -> int:
         if new_state is not None:
             refresh_gate_label_and_color()
         lobster.update(dt, gate_open=gate_state.is_open)
+        # Refresh the mirror status label so the audience can see what
+        # just happened on their host desktop.
+        last = mirror_thread.consume_last_action()
+        if last:
+            age = time.time() - last[0]
+            if age < 4.0:
+                mirror_label.text = f"mirror: {last[1]}"
+            elif mirror_label.text != "mirror: idle":
+                mirror_label.text = "mirror: idle"
 
     pyglet.clock.schedule_interval(tick, 1 / 60)
-    print("meet_a_claw overlay — B3 walk + B6 gate watcher.")
-    print(f"  watching: {GATE_STATE_FILE}")
-    print("  SPACE/R/B/ESC, or grant-trash.sh / revoke-trash.sh to toggle gate.")
+    print("meet_a_claw overlay — walk + gate watcher + click toggle + host mirror.")
+    print(f"  gate state file:   {GATE_STATE_FILE}")
+    print(f"  host demo desktop: {HOST_DEMO_DIR}")
+    print(f"  host destinations: { {k: str(v) for k, v in HOST_DEST.items()} }")
+    print("  click the gate (or SPACE/R/B/P/D/F/ESC keys) to drive the demo.")
     try:
         pyglet.app.run()
     finally:
         gate_observer.stop()
         gate_observer.join(timeout=2.0)
+        mirror_thread.stop()
+        mirror_thread.join(timeout=2.0)
     return 0
 
 

@@ -27,7 +27,42 @@ hr() { printf "\n\033[36m── %s ──\033[0m\n" "$*"; }
 warn() { printf "\033[33m! %s\033[0m\n" "$*"; }
 ok() { printf "\033[32m✓ %s\033[0m\n" "$*"; }
 
-hr "0. deploy sandbox-internal tidy.sh (read by desktop-tidy skill)"
+HOST_DEMO_DIR="$HOME/Desktop/meet_a_claw-demo"
+DEMO_FILES=(screenshot_2026-05-20.png old_disk.iso draft.pdf temp_notes.tmp tax_receipts_2024.zip random.log empty_file.txt)
+HOST_DESTS=("$HOME/Pictures" "$HOME/Documents" "$HOME/Downloads" "$HOME/Videos" "$HOME/Documents/code")
+
+hr "0a. clean up any leftover demo files from previous takes"
+# Removes demo-file NAMES (only the ones we plant) from each destination
+# we mirror into. We never touch any of the user's real files.
+for dest in "${HOST_DESTS[@]}"; do
+  [ -d "$dest" ] || continue
+  for name in "${DEMO_FILES[@]}"; do
+    [ -f "$dest/$name" ] && rm -f "$dest/$name" && echo "  rm $dest/$name"
+  done
+done
+ok "host destinations swept"
+
+hr "0b. replant host-side demo desktop at $HOST_DEMO_DIR"
+mkdir -p "$HOST_DEMO_DIR"
+rm -f "$HOST_DEMO_DIR"/* 2>/dev/null
+for name in "${DEMO_FILES[@]}"; do
+  touch "$HOST_DEMO_DIR/$name"
+done
+head -c 1024   /dev/urandom > "$HOST_DEMO_DIR/screenshot_2026-05-20.png"
+head -c 524288 /dev/urandom > "$HOST_DEMO_DIR/old_disk.iso"
+head -c 4096   /dev/urandom > "$HOST_DEMO_DIR/draft.pdf"
+head -c 200    /dev/urandom > "$HOST_DEMO_DIR/temp_notes.tmp"
+head -c 8192   /dev/urandom > "$HOST_DEMO_DIR/tax_receipts_2024.zip"
+touch -d "2024-01-15" "$HOST_DEMO_DIR/old_disk.iso"
+touch -d "2023-12-01" "$HOST_DEMO_DIR/random.log"
+ok "host demo desktop has $(ls "$HOST_DEMO_DIR" | wc -l) files"
+
+# Pre-create dest dirs so the first mirror has somewhere to land.
+for dest in "${HOST_DESTS[@]}"; do
+  mkdir -p "$dest"
+done
+
+hr "0c. deploy sandbox-internal tidy.sh (read by desktop-tidy skill)"
 "$NEMOCLAW" "$SANDBOX" exec --timeout 15 -- bash -c 'mkdir -p /sandbox/.openclaw/bin'
 CONTAINER=$(docker ps --filter "name=openshell-$SANDBOX" --format '{{.Names}}' | head -1)
 if [ -z "$CONTAINER" ]; then
