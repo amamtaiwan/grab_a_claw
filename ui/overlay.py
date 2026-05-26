@@ -614,14 +614,18 @@ class DesktopArrangeBroker(threading.Thread):
             suffix = ext.lower().lstrip(".")
             if suffix:
                 files = [f for f in files if f.lower().endswith("." + suffix)]
-        # Sort
-        sort = (intent.get("sort") or "A-Z").upper()
+        # Sort (accept Nemotron's natural-language aliases for the sort key)
+        sort_raw = (intent.get("sort") or intent.get("order")
+                    or intent.get("ordering") or intent.get("direction") or "A-Z")
+        sort = str(sort_raw).upper()
         if sort in ("A-Z", "ASC", "ALPHA"):
             files.sort(key=str.lower)
         elif sort in ("Z-A", "DESC", "REVERSE"):
             files.sort(key=str.lower, reverse=True)
-        # Column → x. Accept zone name or explicit x.
-        column = intent.get("column") or intent.get("position") or intent.get("zone")
+        # Column → x. Accept many aliases for the zone field.
+        column = (intent.get("column") or intent.get("position")
+                  or intent.get("zone") or intent.get("area")
+                  or intent.get("location") or intent.get("place"))
         col_x = intent.get("x")
         if col_x is None and isinstance(column, str):
             key = column.strip().lower().replace(" ", "-")
@@ -716,10 +720,13 @@ class DesktopArrangeBroker(threading.Thread):
         # at "arrange all PNGs A-Z" altitude instead of pre-computing
         # every (file, x, y) by hand. Check BEFORE the
         # missing-file gate, because by design this intent has no file.
-        if action == "arrange" and not filename and (
-            "sort" in intent or "column" in intent or "rowPitch" in intent
-            or "row_pitch" in intent or "startY" in intent or "start_y" in intent
-            or "filter" in intent
+        if action == "arrange" and not filename and any(
+            k in intent for k in (
+                "sort", "order", "ordering", "direction",
+                "column", "position", "zone", "area", "location", "place",
+                "rowPitch", "row_pitch", "startY", "start_y",
+                "filter", "ext", "pattern",
+            )
         ):
             self._expand_meta_arrange(intent)
             return
