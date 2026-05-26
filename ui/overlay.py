@@ -956,6 +956,31 @@ def start_gate_watcher(state: GateState) -> Observer:
     return observer
 
 
+class _PositionsFileHandler(FileSystemEventHandler):
+    """Reloads icon_positions_pyglet whenever pre-demo.sh rewrites the
+    positions JSON. Without this, running pre-demo.sh while the overlay
+    is up leaves the in-memory cache in a stale state (files we'd
+    popped after a trash earlier would not get re-added)."""
+
+    def __init__(self, reload_cb) -> None:
+        self.reload_cb = reload_cb
+
+    def on_any_event(self, event):  # noqa: D401
+        if event.is_directory:
+            return
+        if Path(event.src_path) == POSITIONS_FILE:
+            self.reload_cb()
+
+
+def start_positions_watcher(reload_cb) -> Observer:
+    observer = Observer(timeout=0.5)
+    observer.schedule(_PositionsFileHandler(reload_cb),
+                      str(POSITIONS_FILE.parent), recursive=False)
+    observer.daemon = True
+    observer.start()
+    return observer
+
+
 # ── pyglet plumbing ────────────────────────────────────────────────────
 
 
@@ -1140,16 +1165,25 @@ def main() -> int:
 
     # Convert per-icon screen positions (from pre-demo.sh) into
     # pyglet-window coordinates so the lobster can walk straight to them.
-    icon_positions_screen = load_icon_positions()
     icon_positions_pyglet: dict[str, tuple[float, float]] = {}
-    for name, (sx, sy) in icon_positions_screen.items():
-        icon_positions_pyglet[name] = screen_to_pyglet(
-            sx, sy, margin_left, margin_top, STAGE_H, screen_h,
-        )
-    if icon_positions_pyglet:
-        print(f"[overlay] loaded {len(icon_positions_pyglet)} icon positions; e.g. "
-              f"{next(iter(icon_positions_pyglet.items()))}")
-    else:
+
+    def reload_icon_positions() -> None:
+        """Refresh icon_positions_pyglet from /tmp/grab_a_claw-positions.json.
+        Called at startup and whenever pre-demo.sh rewrites the JSON, so a
+        re-seed re-populates files we'd previously popped after a trash."""
+        screen = load_icon_positions()
+        if not screen:
+            return
+        icon_positions_pyglet.clear()
+        for name, (sx, sy) in screen.items():
+            icon_positions_pyglet[name] = screen_to_pyglet(
+                sx, sy, margin_left, margin_top, STAGE_H, screen_h,
+            )
+        print(f"[overlay] reloaded {len(icon_positions_pyglet)} icon positions "
+              f"from {POSITIONS_FILE.name}")
+
+    reload_icon_positions()
+    if not icon_positions_pyglet:
         print("[overlay] no icon positions JSON (run scripts/pre-demo.sh)")
     sprite_img = pyglet.image.load(str(SPRITE_PATH))
     sprite_img.anchor_x = sprite_img.width // 2
@@ -1161,6 +1195,7 @@ def main() -> int:
 
     gate_state = GateState()
     gate_observer = start_gate_watcher(gate_state)
+    positions_observer = start_positions_watcher(reload_icon_positions)
 
     # Three threads push into one event queue:
     #   - SandboxMirror: sandbox tidy.sh moves files inside the sandbox;
@@ -1658,6 +1693,8 @@ def main() -> int:
     finally:
         gate_observer.stop()
         gate_observer.join(timeout=2.0)
+        positions_observer.stop()
+        positions_observer.join(timeout=2.0)
         mirror_thread.stop()
         mirror_thread.join(timeout=2.0)
         arrange_broker.stop()
