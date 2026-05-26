@@ -287,14 +287,17 @@ class Lobster:
             self.sprite.scale_x = -abs(self.sprite.scale_x)
 
         # Collision with closed gate. Lobster's right edge reaches the
-        # gate's left edge while walking rightward and the gate is shut →
-        # cancel the walk and start a bounce. Walking leftward (return
-        # home) or with the gate open passes through normally.
+        # gate's left edge while walking rightward AND carrying a file
+        # toward the locked bin → bounce. Walking rightward to pick up
+        # an icon that happens to live past the gate (e.g. files in the
+        # upper-right zone of the desktop) should pass through, because
+        # there's nothing to drop into the bin yet.
         going_right = dx > 0
         right_edge = self.sprite.x + (SPRITE_PX / 2)
         if (
             going_right
             and not gate_open
+            and self.carried_file is not None
             and right_edge >= GATE_X
             and self.walk_target[0] > GATE_X  # only intercept if target is past the gate
         ):
