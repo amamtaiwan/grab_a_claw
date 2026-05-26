@@ -1239,10 +1239,19 @@ def main() -> int:
             _, filename, x, y = event
             source = icon_positions_pyglet.get(filename)
             if source is None:
-                # No known on-screen position — fall back to instant gio set
-                # so the icon still ends up correct, just without animation.
-                claims[filename] = time.time()
+                # No known on-screen position — file may have been moved
+                # into a sort folder or trashed earlier. Skip rather than
+                # making `touch` create an empty shell at the wrong path.
                 path = HOST_HOME / "Desktop" / filename
+                if not path.exists():
+                    mirror_thread.report(
+                        f"{filename} → skipped (not on desktop any more)"
+                    )
+                    return
+                # File is still on the desktop but its position isn't cached
+                # (e.g. user added it manually). Apply the position immediately
+                # so we don't lose the intent, just without animation.
+                claims[filename] = time.time()
                 subprocess.run(
                     ["gio", "set", str(path),
                      "metadata::nautilus-icon-position", f"{x},{y}"],
@@ -1271,9 +1280,13 @@ def main() -> int:
             _, filename = event
             source = icon_positions_pyglet.get(filename)
             if source is None:
-                claims[filename] = time.time()
                 path = HOST_HOME / "Desktop" / filename
+                if not path.exists():
+                    mirror_thread.report(f"{filename} → skipped (already gone)")
+                    return
+                claims[filename] = time.time()
                 subprocess.run(["gio", "trash", str(path)], timeout=3, check=False)
+                icon_positions_pyglet.pop(filename, None)
                 mirror_thread.report(f"{filename} → instant trash (no icon position cached)")
                 return
             lobster.pickup_task = PickupTask(
@@ -1544,6 +1557,11 @@ def main() -> int:
                 if task.do_host_op:
                     status = _mirror_file_on_host(task.filename, task.bucket)
                     mirror_thread.report(f"{task.filename} → {status}")
+                    # File no longer at its source position — drop the
+                    # cached entry so a later reference doesn't make the
+                    # lobster walk to an empty spot. Whether bucket is a
+                    # sort folder or trash, the on-desktop icon is gone.
+                    icon_positions_pyglet.pop(task.filename, None)
                 lobster.pickup(task.filename)
                 task.phase = "to_dest"
                 lobster.walk_to(task.dest_pos)
@@ -1569,6 +1587,11 @@ def main() -> int:
                     claims[task.filename] = time.time()
                     path = HOST_HOME / "Desktop" / task.filename
                     subprocess.run(["gio", "trash", str(path)], timeout=3, check=False)
+                    # File is gone — drop its cached on-screen position so
+                    # any later arrange_request / meta-arrange / re-trash
+                    # for this filename doesn't make the lobster walk to a
+                    # now-empty spot.
+                    icon_positions_pyglet.pop(task.filename, None)
                     mirror_thread.report(f"{task.filename} → dropped into trash")
                 lobster.drop()
                 lobster.pickup_task = None
