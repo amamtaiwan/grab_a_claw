@@ -1,4 +1,4 @@
-# meet_a_claw network guardrails
+# grab_a_claw network guardrails
 #
 # Applied via:  nemoclaw hack-agent policy-add --from-file ./network.yaml
 # Verified via: nemoclaw hack-agent status   (look under `Policy → network_policies`)

@@ -1,4 +1,4 @@
-# Submission — meet_a_claw
+# Submission — grab_a_claw
 
 > For the NVIDIA Agent Hackathon judges. Three minutes' worth of read.
 
@@ -86,7 +86,57 @@ The submission's bonus criterion is "use NemoClaw guardrails." We didn't decorat
 - [skills/desktop-tidy/SKILL.md](./skills/desktop-tidy/SKILL.md) — 30 lines. Hands the agent the exact JS snippet to call `exec` on `tidy.sh`, so the dashboard turn lands in ~22 s instead of thrashing on tool-discovery for 3 minutes.
 - [sandbox-bin/tidy.sh](./sandbox-bin/tidy.sh) — the bash that actually does the work, deployed into the sandbox by `pre-demo.sh`.
 - [scripts/run-demo.sh](./scripts/run-demo.sh) — same logic via `nemoclaw exec`, kept as recovery if the agent ever stalls during a live demo.
-- [ui/overlay.py](./ui/overlay.py) — pyglet overlay; walks, carries, bounces, watches `/tmp/meet_a_claw-gate-state` and flips visual.
+- [ui/overlay.py](./ui/overlay.py) — pyglet overlay; walks, carries, bounces, watches `/tmp/grab_a_claw-gate-state` and flips visual.
+
+## Fine-tune evaluation (bonus track we attempted, and what we learned)
+
+The hackathon's bonus dimension is "fine-tune a Nemotron". We spent ~15 hours evaluating a LoRA QLoRA fine-tune of Nemotron-3-Nano-30B-A3B to reinforce the `desktop-arrange` canonical JSON schema. **Five training rounds all converged on training metrics but produced unusable output at vLLM serve time.** This section documents the experiment honestly so judges can verify our diagnosis instead of guessing.
+
+### Stack chosen
+
+- **Base**: `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` (30B total / 3B active LatentMoE, 60 GB BF16).
+- **Trainer**: NVIDIA NeMo AutoModel (`NeMoAutoModelForCausalLM` + `peft.lora.PeftConfig`), driven by [train/nano-peft-singlegpu.yaml](./train/nano-peft-singlegpu.yaml). Single 96 GB Blackwell, QLoRA via `bnb_4bit_quant_type=nf4` to fit the base in 4-bit.
+- **Server**: vLLM 0.17.1 + flashinfer 0.6.4 + `--attention-backend TRITON_ATTN --enforce-eager` to bypass the Blackwell sm_120 PTX issue on driver 570.195.
+- **Data**: [train/generate_sft_data.py](./train/generate_sft_data.py) generates 5000 ChatML samples covering set_position × 5 zones, trash, meta-arrange, prefix-trash, ext-routing, circle, NxN grid, relative-position, multi-move, stack, swap.
+
+### Results across 5 rounds
+
+| Round | LoRA target | Dataset | Steps × epoch | train_loss | val_loss | vLLM output |
+|---|---|---|---|---|---|---|
+| v1 | + lm_head | 291 | 220 × 3 | 0.0042 | 0.0047 | colon→comma corruption in JSON |
+| v2 | – lm_head, – MoE experts | 291 | 220 × 3 | 0.0049 | 0.0066 | invents non-canonical keys (`intent`, `move_files`) |
+| v3 | same + chat_template `enable_thinking=False` baked in | 291 | 220 × 3 | 0.0051 | 0.0067 | token-soup (`{"tk"}`, `{"scheleton":...}`) |
+| v4 | r=16 | 5000 (incl. compositional) | 600 × 1 (batch=8) | 0.048 | 0.113 | policy-refusal hallucinations + infinite repetition |
+| v5 | r=128, alpha=256 | 5000 | 1126 × 2 (batch=8) | 0.021 | 0.070 | wraps intents in invented `{"seq":[...]}`, partial token typos, mid-stream reasoning |
+
+For every round, the **base Nano with no LoRA** emits canonical `{"action":"set_position","file":"draft.pdf","x":1000,"y":0}` perfectly on the same vLLM endpoint. The LoRA adapter *makes the model worse*.
+
+### Root cause
+
+Cross-check confirmed it's not a single tunable:
+
+- **Not chat-template default mismatch.** v3 mirrored the training template into the vLLM `--chat-template` flag (default `enable_thinking=False` on both sides); output still broke.
+- **Not LoRA capacity.** v5 bumped rank from 16 → 128 (8× more adapter params); behaviour got marginally better on Train/val loss but the symptom class was identical.
+- **Not dataset size.** v4–v5 saw 17× more data than v1–v3; the failure modes only shifted, never disappeared.
+- **Not the training stack alone.** Loading the v4 adapter via HuggingFace Transformers + PEFT + bitsandbytes (bypassing vLLM entirely) crashed on `modeling_nemotron_h.py:1633 cache_position[-1]` — Nemotron-H's custom modeling code is itself in flux against transformers 4.57.6.
+
+The remaining hypothesis — the only one consistent with *all five* outcomes — is a **stack-level interaction between NeMo Automodel's bnb-4bit-trained LoRA adapter format and vLLM Punica's expectation for how to merge a LoRA into a quantized Nemotron-H base at serve time**. The adapter `target_modules` (mamba `in_proj`, attention `q/k/v/o_proj`) load without warnings, but the runtime forward path either rescales them differently or merges into wrong projections.
+
+### Why we stopped (and what we chose instead)
+
+We could have kept iterating — Nemotron-Nano-9B full fine-tune was the natural next step (smaller, full FT instead of LoRA, sidesteps the Punica path) and probably would have worked. But:
+
+- We've already shipped a production-grade alternative: the [lookup-table SKILL.md](./skills/desktop-arrange/SKILL.md) + tolerant broker (`DesktopArrangeBroker` in [ui/overlay.py](./ui/overlay.py)) accepts every off-schema variant we observed and routes it to canonical intents. In practice this is what real LLM-tool stacks do anyway: middleware between the model and the action layer that absorbs schema drift.
+- The 5/28 deadline is real. Adding another 24-hour training experiment with uncertain outcome is the wrong asymmetry — the worst case is showing up to the demo with a half-trained model + a broken pipeline + no time to fall back.
+
+So we wrote it up instead of training again. The Super 120B + lookup-table SKILL.md + tolerant broker is the demo path of record.
+
+### Artifacts judges can inspect
+
+- [train/generate_sft_data.py](./train/generate_sft_data.py) — the 5000-sample compositional dataset generator.
+- [train/nano-peft-singlegpu.yaml](./train/nano-peft-singlegpu.yaml) — single-GPU LoRA recipe, adapted from NVIDIA's official 8×H100 [`customizer_nemotron_nano_peft.yaml`](https://github.com/NVIDIA-NeMo/Automodel/blob/main/examples/llm_finetune/nemotron/customizer_nemotron_nano_peft.yaml).
+- [train/chat_template_no_thinking.jinja](./train/chat_template_no_thinking.jinja) — the train/serve template-alignment fix.
+- [train/checkpoints/nano-lora-schema-v{1..5}/LATEST/losses.json](./train/checkpoints/) — final train/val numbers per round, plus saved adapters.
 
 ## What we'd build next (if we had a week, not 5 days)
 

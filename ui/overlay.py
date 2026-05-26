@@ -1,10 +1,10 @@
 """
-meet_a_claw overlay — B3 walk + B6 gate state + bounce.
+grab_a_claw overlay — B3 walk + B6 gate state + bounce.
 
 Visuals:
     - Lobster sprite walks between HOME and TRASH_ZONE.
     - A vertical "gate" bar sits between the lobster and the trash zone.
-      Color tracks /tmp/meet_a_claw-gate-state:
+      Color tracks /tmp/grab_a_claw-gate-state:
         contains "open"   → green   (policies/grant-trash.sh just ran)
         contains "closed" → red     (policies/revoke-trash.sh just ran)
         missing           → red     (default; gate is closed)
@@ -26,7 +26,7 @@ Wiring:
       come via a WebSocket; for now keypresses are the script.
 
 Run:
-    cd /media/ufoai/DATAs3/fromtrx51/workspace/meet_a_claw/ui
+    cd <repo-root>/ui
     .venv/bin/python overlay.py
 """
 
@@ -116,7 +116,7 @@ HOST_DEMO_DIR = HOST_HOME / "Desktop"
 
 # JSON file written by scripts/pre-demo.sh with the screen-coord
 # position of each planted demo icon. Lobster walks to those positions.
-POSITIONS_FILE = Path("/tmp/meet_a_claw-positions.json")
+POSITIONS_FILE = Path("/tmp/grab_a_claw-positions.json")
 
 # Where mirrored files end up on the host. To keep the demo's payoff
 # *visible on the desktop*, we drop into sibling folders directly on
@@ -149,7 +149,7 @@ SANDBOX_TRASH_PATH = "/sandbox/.openclaw/trash"
 
 HERE = Path(__file__).resolve().parent
 SPRITE_PATH = HERE / "assets" / "sprites" / "lobster_72.png"
-GATE_STATE_FILE = Path("/tmp/meet_a_claw-gate-state")
+GATE_STATE_FILE = Path("/tmp/grab_a_claw-gate-state")
 
 SPRITE_SCALE = 2.0
 SPRITE_PX = int(72 * SPRITE_SCALE)
@@ -196,13 +196,19 @@ class PickupTask:
     drop zone, drop. Phases are 'to_source' then 'to_dest'.
     do_host_op=False is for events that fired AFTER the host filesystem
     already changed (e.g. agent did gio set directly) — then the lobster
-    only needs to animate, not re-do the host operation."""
+    only needs to animate, not re-do the host operation.
+
+    drop_set_position_xy / drop_trash defer the host operation to the
+    moment the lobster drops the file at dest_pos — so the visual carry
+    matches the actual file's appearance at the destination."""
     filename: str
     bucket: str
     source_pos: tuple[float, float]
     dest_pos: tuple[float, float]
     phase: str = "to_source"
     do_host_op: bool = True
+    drop_set_position_xy: tuple[int, int] | None = None
+    drop_trash: bool = False
 
 
 @dataclass
@@ -332,7 +338,7 @@ class Lobster:
 class GateState:
     """Thread-safe holder for the trash gate's state.
 
-    Tracks both the settled state (open/closed, from /tmp/meet_a_claw-
+    Tracks both the settled state (open/closed, from /tmp/grab_a_claw-
     gate-state) and a 'pending' state (set when the operator clicks to
     toggle; cleared when the watcher sees the file change OR when the
     pending action times out). The 'pending' state lets the overlay
@@ -503,7 +509,7 @@ class DesktopArrangeBroker(threading.Thread):
     (/sandbox/.openclaw/state/desktop-intents.jsonl). Each new JSON line
     is one intent the agent queued via the desktop-arrange skill — we
     execute the host-side equivalent here. Trash intents are gated on
-    /tmp/meet_a_claw-gate-state; closed → bounce event, no host op.
+    /tmp/grab_a_claw-gate-state; closed → bounce event, no host op.
 
     Architecture: sandbox proposes, host (this thread) disposes. No
     host filesystem is ever touched from inside the sandbox. The
@@ -512,7 +518,7 @@ class DesktopArrangeBroker(threading.Thread):
     """
 
     POLL_INTERVAL_S = 1.0
-    GATE_FILE = Path("/tmp/meet_a_claw-gate-state")
+    GATE_FILE = Path("/tmp/grab_a_claw-gate-state")
 
     def __init__(self, container_resolver, event_queue: "queue.Queue"):
         super().__init__(name="DesktopArrangeBroker", daemon=True)
@@ -522,11 +528,21 @@ class DesktopArrangeBroker(threading.Thread):
         self._processed_lines = 0
 
     def run(self) -> None:
+        # On startup, fast-forward past any backlog left over from a
+        # prior overlay run — only intents the agent writes AFTER this
+        # point should trigger a lobster animation. Operators reset for
+        # a fresh demo via ./scripts/pre-demo.sh, which wipes the file.
+        first_poll = True
         while not self._stop.is_set():
             container = self._resolver()
             if container:
                 lines = self._read_intents(container)
-                if len(lines) > self._processed_lines:
+                if first_poll:
+                    self._processed_lines = len(lines)
+                    if lines:
+                        print(f"[broker] startup: skipping {len(lines)} backlog intent(s)")
+                    first_poll = False
+                elif len(lines) > self._processed_lines:
                     for line in lines[self._processed_lines:]:
                         self._handle_line(line)
                     self._processed_lines = len(lines)
@@ -550,47 +566,192 @@ class DesktopArrangeBroker(threading.Thread):
         starts re-reading from line 0."""
         self._processed_lines = 0
 
+    # Zone-name → screen center. Matches the SKILL.md coord table so
+    # the agent can write {"action":"move","position":"upper-right"}
+    # and we resolve it here instead of begging Nemotron to emit
+    # exact x/y every time.
+    ZONE_CENTERS = {
+        "upper-left":   (520,  310),
+        "upper_left":   (520,  310),
+        "top-left":     (520,  310),
+        "upper-right":  (1440, 310),
+        "upper_right":  (1440, 310),
+        "top-right":    (1440, 310),
+        "bottom-left":  (520,  770),
+        "bottom_left":  (520,  770),
+        "lower-left":   (520,  770),
+        "bottom-right": (1440, 770),
+        "bottom_right": (1440, 770),
+        "lower-right":  (1440, 770),
+        "center":       (960,  520),
+        "middle":       (960,  520),
+    }
+
+    def _read_desktop_files(self) -> list[str]:
+        container = self._resolver()
+        if not container:
+            return []
+        try:
+            out = subprocess.check_output(
+                ["docker", "exec", "--user", "sandbox", container,
+                 "cat", "/sandbox/.openclaw/state/desktop-files.txt"],
+                text=True, timeout=3, stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                FileNotFoundError, OSError):
+            return []
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def _expand_meta_arrange(self, intent: dict) -> None:
+        """Agent emitted a batch plan; expand into N arrange_request events."""
+        files = self._read_desktop_files()
+        if not files:
+            print("[broker] meta-arrange: desktop-files.txt empty/unavailable", file=sys.stderr)
+            return
+        # Optional extension filter (e.g. {"filter":"png"} or {"ext":".png"})
+        ext = intent.get("filter") or intent.get("ext") or intent.get("pattern")
+        if isinstance(ext, str):
+            suffix = ext.lower().lstrip(".")
+            if suffix:
+                files = [f for f in files if f.lower().endswith("." + suffix)]
+        # Sort
+        sort = (intent.get("sort") or "A-Z").upper()
+        if sort in ("A-Z", "ASC", "ALPHA"):
+            files.sort(key=str.lower)
+        elif sort in ("Z-A", "DESC", "REVERSE"):
+            files.sort(key=str.lower, reverse=True)
+        # Column → x. Accept zone name or explicit x.
+        column = intent.get("column") or intent.get("position") or intent.get("zone")
+        col_x = intent.get("x")
+        if col_x is None and isinstance(column, str):
+            key = column.strip().lower().replace(" ", "-")
+            if key in self.ZONE_CENTERS:
+                col_x = self.ZONE_CENTERS[key][0]
+        if col_x is None:
+            col_x = 1440  # default to upper-right column
+        # Row pitch + starting y
+        pitch = intent.get("rowPitch") or intent.get("row_pitch") or 130
+        start_y = intent.get("startY") or intent.get("start_y") or 180
+        limit = intent.get("limit") or 12
+        files = files[:int(limit)]
+        print(f"[broker] meta-arrange: {len(files)} file(s) sort={sort} col_x={col_x} "
+              f"pitch={pitch} start_y={start_y}")
+        for i, fname in enumerate(files):
+            x = int(col_x)
+            y = int(start_y) + i * int(pitch)
+            self._queue.put(("arrange_request", fname, x, y))
+            print(f"[broker]   → arrange_request {fname} → ({x},{y})")
+
+    def _resolve_xy(self, intent: dict):
+        """Accept either explicit x/y or a zone name. Returns (x,y) or None."""
+        x = intent.get("x")
+        y = intent.get("y")
+        if x is not None and y is not None:
+            return int(x), int(y)
+        pos = intent.get("position") or intent.get("zone") or intent.get("area")
+        if isinstance(pos, str):
+            key = pos.strip().lower().replace(" ", "-")
+            if key in self.ZONE_CENTERS:
+                return self.ZONE_CENTERS[key]
+        return None
+
+    @staticmethod
+    def _repair_json(line: str) -> dict | None:
+        """Try to extract action + file from a broken JSON line. Handles the
+        common Nemotron pattern of unescaped quotes inside string values, e.g.
+        '{"intent":"trash","path":"Desktop/"screenshot.png""}'. Returns a
+        canonical intent dict, or None if nothing reasonable could be salvaged.
+        """
+        import re
+        text = line.lower()
+        if '"trash"' in text or "'trash'" in text or '"delete"' in text or '"remove"' in text:
+            action = "trash"
+        elif '"set_position"' in text or '"move"' in text or '"place"' in text:
+            action = "move"
+        else:
+            return None
+        # Match filename-like tokens (name with extension). Returns LAST match
+        # so that prefix tokens like "Desktop" don't win.
+        candidates = re.findall(r'([A-Za-z0-9_][A-Za-z0-9_\-.]*\.[A-Za-z0-9]+)', line)
+        if not candidates:
+            return None
+        # Filter out things that look like JS file extensions in JSON keys
+        # (e.g. "intent", "action") — only the last filename-ish hit is taken.
+        fname = candidates[-1]
+        intent: dict = {"action": action, "file": fname}
+        if action == "move":
+            # Try to extract x, y numbers
+            nums = re.findall(r'(?<!\w)(\d{2,4})(?!\w)', line)
+            if len(nums) >= 2:
+                intent["x"] = int(nums[0])
+                intent["y"] = int(nums[1])
+            else:
+                return None  # no coords → can't move
+        return intent
+
     def _handle_line(self, line: str) -> None:
         try:
             intent = json.loads(line)
         except json.JSONDecodeError:
-            print(f"[broker] bad JSON line ignored: {line!r}", file=sys.stderr)
+            repaired = self._repair_json(line)
+            if repaired is None:
+                print(f"[broker] bad JSON line ignored: {line!r}", file=sys.stderr)
+                return
+            print(f"[broker] repaired bad JSON: {line!r} → {repaired}", file=sys.stderr)
+            intent = repaired
+        # Accept several aliases for the action field — Nemotron
+        # sometimes uses "intent"/"op"/"type" instead of "action".
+        action = (intent.get("action") or intent.get("intent")
+                  or intent.get("op") or intent.get("type"))
+        # Accept several aliases for the filename field — Nemotron
+        # frequently writes "path"/"target"/"filename" instead of "file".
+        filename = (intent.get("file") or intent.get("path")
+                    or intent.get("target") or intent.get("filename")
+                    or intent.get("name"))
+        if isinstance(filename, str) and "/" in filename:
+            filename = filename.rsplit("/", 1)[-1]
+        # Meta-arrange: agent describes a batch plan (no specific file,
+        # high-level fields like sort / column / rowPitch) — broker
+        # expands it into N arrange_request events. Lets Nemotron stay
+        # at "arrange all PNGs A-Z" altitude instead of pre-computing
+        # every (file, x, y) by hand. Check BEFORE the
+        # missing-file gate, because by design this intent has no file.
+        if action == "arrange" and not filename and (
+            "sort" in intent or "column" in intent or "rowPitch" in intent
+            or "row_pitch" in intent or "startY" in intent or "start_y" in intent
+            or "filter" in intent
+        ):
+            self._expand_meta_arrange(intent)
             return
-        action = intent.get("action")
-        filename = intent.get("file")
         if not action or not filename:
             print(f"[broker] missing action/file: {intent}", file=sys.stderr)
             return
-        path = HOST_HOME / "Desktop" / filename
-        if action == "set_position":
-            x = intent.get("x")
-            y = intent.get("y")
-            if x is None or y is None:
+        # Accept the agent's natural phrasing ("move") as an alias.
+        # The broker NEVER touches the host filesystem directly — it
+        # only enqueues an event for the overlay's animation handler,
+        # which performs the host op at the lobster's drop frame so the
+        # visual carry matches the file actually appearing at dest.
+        if action in ("set_position", "move", "arrange", "place"):
+            xy = self._resolve_xy(intent)
+            if xy is None:
+                print(f"[broker] {action} {filename}: no x/y or known zone in {intent}",
+                      file=sys.stderr)
                 return
-            try:
-                subprocess.run(
-                    ["gio", "set", str(path), "metadata::nautilus-icon-position", f"{x},{y}"],
-                    timeout=3, check=False,
-                )
-                print(f"[broker] set_position {filename} → ({x},{y})")
-            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-                print(f"[broker] set_position failed: {e}", file=sys.stderr)
-        elif action == "trash":
+            x, y = xy
+            self._queue.put(("arrange_request", filename, x, y))
+            print(f"[broker] arrange_request {filename} → ({x},{y}) [deferred to drop]")
+        elif action in ("trash", "delete", "remove"):
             state = ""
             try:
                 state = self.GATE_FILE.read_text().strip()
             except (OSError, FileNotFoundError):
                 state = "closed"
             if state != "open":
-                # Closed gate → emit denied animation; don't touch host.
                 self._queue.put(("denied", filename))
                 print(f"[broker] trash {filename} BLOCKED (gate closed) — denied event queued")
                 return
-            try:
-                subprocess.run(["gio", "trash", str(path)], timeout=3, check=False)
-                print(f"[broker] trash {filename} → host trash (gate was open)")
-            except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-                print(f"[broker] trash failed: {e}", file=sys.stderr)
+            self._queue.put(("trash_request", filename))
+            print(f"[broker] trash_request {filename} [deferred to drop, gate open]")
         else:
             print(f"[broker] unknown action {action!r}: {intent}", file=sys.stderr)
 
@@ -809,7 +970,7 @@ def make_window(origin_x: int, origin_y: int, width: int, height: int) -> Window
                 height=height,
                 config=config,
                 style=style,
-                caption="meet_a_claw",
+                caption="grab_a_claw",
                 resizable=False,
             )
             print(f"[overlay] window style: {style}")
@@ -821,7 +982,7 @@ def make_window(origin_x: int, origin_y: int, width: int, height: int) -> Window
         window = Window(
             width=width, height=height,
             style=Window.WINDOW_STYLE_BORDERLESS,
-            caption="meet_a_claw", resizable=False,
+            caption="grab_a_claw", resizable=False,
         )
         print("[overlay] window style: default (no transparency available)")
     window.set_location(origin_x, origin_y)
@@ -954,11 +1115,16 @@ def main() -> int:
 
     HOME_POS = (max(80, int(STAGE_W * 0.06)), max(120, int(STAGE_H * 0.18)))
     TRASH_ZONE_POS = (int(STAGE_W * 0.86), HOME_POS[1])
-    GATE_X = int(STAGE_W * 0.74)
-    GATE_HEIGHT = max(220, int(STAGE_H * 0.30))
-    GATE_Y = HOME_POS[1] - int(GATE_HEIGHT * 0.3)
+    # Single trash-bin widget at TRASH_ZONE_POS: visualises policy state
+    # (red=closed / yellow=pending / green=open) AND is the drop target.
+    # The GATE_* names are reused so existing bounce/hitbox/SHAPE code
+    # keeps working with the bin's geometry.
+    GATE_WIDTH = 80
+    GATE_HEIGHT = 100
+    GATE_X = TRASH_ZONE_POS[0] - GATE_WIDTH // 2
+    GATE_Y = TRASH_ZONE_POS[1] - GATE_HEIGHT // 2
     print(f"[overlay] screen {screen_w}x{screen_h}; reserved L{margin_left}/T{margin_top}/R{margin_right}/B{margin_bottom}")
-    print(f"[overlay] stage    {STAGE_W}x{STAGE_H} at ({margin_left},{margin_top}); HOME={HOME_POS} TRASH={TRASH_ZONE_POS} GATE_X={GATE_X}")
+    print(f"[overlay] stage    {STAGE_W}x{STAGE_H} at ({margin_left},{margin_top}); HOME={HOME_POS} TRASH_BIN=({GATE_X},{GATE_Y}) {GATE_WIDTH}x{GATE_HEIGHT}")
 
     window = make_window(origin_x=margin_left, origin_y=margin_top, width=STAGE_W, height=STAGE_H)
 
@@ -1067,11 +1233,65 @@ def main() -> int:
             )
             lobster.walk_to(source)
             mirror_thread.report(f"{filename} → vanished (lobster animates after the fact)")
-        elif kind == "denied":
+        elif kind == "arrange_request":
+            # Broker enqueued a set_position intent. We defer the host
+            # gio set + touch until the lobster drops the file at dest.
+            _, filename, x, y = event
+            source = icon_positions_pyglet.get(filename)
+            if source is None:
+                # No known on-screen position — fall back to instant gio set
+                # so the icon still ends up correct, just without animation.
+                claims[filename] = time.time()
+                path = HOST_HOME / "Desktop" / filename
+                subprocess.run(
+                    ["gio", "set", str(path),
+                     "metadata::nautilus-icon-position", f"{x},{y}"],
+                    timeout=3, check=False,
+                )
+                subprocess.run(["touch", str(path)], timeout=3, check=False)
+                mirror_thread.report(
+                    f"{filename} → instant set_position ({x},{y}) (no icon position cached)"
+                )
+                return
+            dest = _screen_to_pg((x, y))
+            lobster.pickup_task = PickupTask(
+                filename=filename, bucket="arrange",
+                source_pos=source, dest_pos=dest, phase="to_source",
+                do_host_op=False,
+                drop_set_position_xy=(x, y),
+            )
+            lobster.walk_to(source)
+            mirror_thread.report(f"{filename} → carrying to ({x},{y})")
+            # Update the cached icon position so a follow-up arrange of
+            # the same file starts from the new spot, not the old one.
+            icon_positions_pyglet[filename] = dest
+        elif kind == "trash_request":
+            # Gate was open at broker time; carry the file to the trash
+            # zone and execute gio trash on drop.
             _, filename = event
             source = icon_positions_pyglet.get(filename)
             if source is None:
-                mirror_thread.report(f"{filename} → denied (no icon position; skipping)")
+                claims[filename] = time.time()
+                path = HOST_HOME / "Desktop" / filename
+                subprocess.run(["gio", "trash", str(path)], timeout=3, check=False)
+                mirror_thread.report(f"{filename} → instant trash (no icon position cached)")
+                return
+            lobster.pickup_task = PickupTask(
+                filename=filename, bucket="trash",
+                source_pos=source, dest_pos=DROP_ZONES["trash"], phase="to_source",
+                do_host_op=False,
+                drop_trash=True,
+            )
+            lobster.walk_to(source)
+            mirror_thread.report(f"{filename} → carrying to trash")
+        elif kind == "denied":
+            _, filename = event
+            # Flash the bin bright red for ~0.8s so the operator can't miss
+            # that the policy actually blocked the destructive op.
+            denial_flash_until[0] = time.time() + 0.8
+            source = icon_positions_pyglet.get(filename)
+            if source is None:
+                mirror_thread.report(f"DENIED: {filename} (trash bin is LOCKED)")
                 return
             # Walk to the file → walk toward the trash zone → the
             # closed-gate auto-bounce handler fires when the lobster
@@ -1084,7 +1304,7 @@ def main() -> int:
                 do_host_op=False,  # the file is staying on the desktop
             )
             lobster.walk_to(source)
-            mirror_thread.report(f"{filename} → denied (will bounce off gate)")
+            mirror_thread.report(f"DENIED: {filename} — lobster will bounce off the locked bin")
 
     # Path to the grant/revoke scripts so a click on the gate runs them.
     REPO_DIR = HERE.parent
@@ -1145,17 +1365,38 @@ def main() -> int:
         x=GATE_X, y=GATE_Y, width=GATE_WIDTH, height=GATE_HEIGHT,
         color=initial_color,
     )
+    gate_shape.opacity = 220  # let the icon read clearly on top
+
+    # Optional Twemoji wastebasket icon (drop a PNG into
+    # ui/assets/sprites/wastebasket_72.png and it gets drawn centred on
+    # the colored bin rectangle — the rectangle is still the policy state
+    # signal; the icon just makes it readable as a trash bin).
+    bin_icon_path = HERE / "assets" / "sprites" / "wastebasket_72.png"
+    bin_icon_sprite: pyglet.sprite.Sprite | None = None
+    if bin_icon_path.exists():
+        img = pyglet.image.load(str(bin_icon_path))
+        img.anchor_x = img.width // 2
+        img.anchor_y = img.height // 2
+        bin_icon_sprite = pyglet.sprite.Sprite(
+            img,
+            x=GATE_X + GATE_WIDTH // 2,
+            y=GATE_Y + GATE_HEIGHT // 2,
+        )
+        bin_icon_sprite.scale = min(
+            (GATE_WIDTH - 8) / img.width, (GATE_HEIGHT - 8) / img.height
+        )
+        print(f"[overlay] trash icon loaded from {bin_icon_path.name}")
 
     # Transparent background — the overlay literally sits on top of the
     # user's real desktop now.
     pyglet.gl.glClearColor(0.0, 0.0, 0.0, 0.0)
     # On-screen instructions live in the operator terminal now; the
-    # desktop overlay only shows the lobster, the gate, and a tiny
-    # mirror-status hint near the gate.
+    # desktop overlay only shows the lobster, the trash bin (red/yellow/
+    # green = closed/pending/open), and a tiny mirror-status hint.
     mirror_label = pyglet.text.Label(
         "mirror: idle",
         font_name="Sans", font_size=11, color=(40, 40, 40, 230),
-        x=GATE_X + 30, y=GATE_Y + GATE_HEIGHT + 30, anchor_x="left",
+        x=GATE_X + GATE_WIDTH + 12, y=GATE_Y + GATE_HEIGHT + 6, anchor_x="left",
     )
     desktop_label = pyglet.text.Label(
         text=f"desktop: {len(available_files)} file(s)",
@@ -1166,24 +1407,36 @@ def main() -> int:
     def refresh_desktop_label() -> None:
         desktop_label.text = f"desktop: {len(available_files)} file(s)"
     gate_label = pyglet.text.Label(
-        "gate: CLOSED (click to open)", font_name="Sans", font_size=11, color=(80, 60, 40, 200),
-        x=GATE_X - 110, y=GATE_Y + GATE_HEIGHT + 8,
+        "trash: LOCKED (click to unlock)", font_name="Sans", font_size=11,
+        color=(80, 60, 40, 220),
+        x=GATE_X + GATE_WIDTH // 2, y=GATE_Y + GATE_HEIGHT + 10,
+        anchor_x="center",
     )
+
+    # Single-cell list so begin_task_for_event can mutate this from
+    # outside the closure. Holds wall-time until the bin should flash
+    # bright red after a policy-denied trash attempt.
+    denial_flash_until = [0.0]
+    GATE_COLOR_DENIAL_FLASH = (255, 30, 30)
 
     def refresh_gate_label_and_color() -> None:
         pending = gate_state.pending
+        if time.time() < denial_flash_until[0]:
+            gate_shape.color = GATE_COLOR_DENIAL_FLASH
+            gate_label.text = "trash: DENIED — bin is LOCKED"
+            return
         if pending == GateState.PENDING_OPENING:
             gate_shape.color = GATE_COLOR_PENDING
-            gate_label.text = "gate: OPENING…"
+            gate_label.text = "trash: UNLOCKING…"
         elif pending == GateState.PENDING_CLOSING:
             gate_shape.color = GATE_COLOR_PENDING
-            gate_label.text = "gate: CLOSING…"
+            gate_label.text = "trash: LOCKING…"
         elif gate_state.is_open:
             gate_shape.color = GATE_COLOR_OPEN
-            gate_label.text = "gate: OPEN (click to close)"
+            gate_label.text = "trash: UNLOCKED (click to lock)"
         else:
             gate_shape.color = GATE_COLOR_CLOSED
-            gate_label.text = "gate: CLOSED (click to open)"
+            gate_label.text = "trash: LOCKED (click to unlock)"
 
     refresh_gate_label_and_color()
 
@@ -1211,6 +1464,8 @@ def main() -> int:
     def on_draw():
         window.clear()
         gate_shape.draw()
+        if bin_icon_sprite is not None:
+            bin_icon_sprite.draw()
         gate_label.draw()
         lobster.sprite.draw()
         if lobster.carried_file is not None:
@@ -1267,8 +1522,13 @@ def main() -> int:
 
     def tick(dt: float):
         gate_state.maybe_timeout_pending()
-        if gate_state.consume_change():
+        # Refresh on either a gate-state change OR while a denial flash
+        # is still in flight (so the bin reverts to normal red/green
+        # after the brief flash window expires).
+        if gate_state.consume_change() or denial_flash_until[0] > 0:
             refresh_gate_label_and_color()
+            if time.time() >= denial_flash_until[0]:
+                denial_flash_until[0] = 0.0
         # Lobster only walks through when the gate has actually settled
         # to OPEN — a pending transition does not yet grant passage.
         lobster.update(dt, gate_open=gate_state.is_open and gate_state.pending is None)
@@ -1288,8 +1548,36 @@ def main() -> int:
                 task.phase = "to_dest"
                 lobster.walk_to(task.dest_pos)
             elif task.phase == "to_dest":
+                # Deferred host op fires at the same frame as the visual
+                # drop so the icon appears at the destination in sync.
+                # We claim the filename BEFORE the host op so the next
+                # DesktopWatcher poll (~1.5s later) sees the claim and
+                # skips emitting a duplicate 'rearrange' / 'vanished'
+                # animation for the change we just made.
+                if task.drop_set_position_xy is not None:
+                    dx, dy = task.drop_set_position_xy
+                    claims[task.filename] = time.time()
+                    path = HOST_HOME / "Desktop" / task.filename
+                    subprocess.run(
+                        ["gio", "set", str(path),
+                         "metadata::nautilus-icon-position", f"{dx},{dy}"],
+                        timeout=3, check=False,
+                    )
+                    subprocess.run(["touch", str(path)], timeout=3, check=False)
+                    mirror_thread.report(f"{task.filename} → dropped at ({dx},{dy})")
+                if task.drop_trash:
+                    claims[task.filename] = time.time()
+                    path = HOST_HOME / "Desktop" / task.filename
+                    subprocess.run(["gio", "trash", str(path)], timeout=3, check=False)
+                    mirror_thread.report(f"{task.filename} → dropped into trash")
                 lobster.drop()
                 lobster.pickup_task = None
+                # Auto-return home after the task completes (success or
+                # denied bounce both end here). Skip if another event is
+                # already waiting — that event's begin_task_for_event
+                # will take over on the next IDLE tick.
+                if mirror_queue.empty():
+                    lobster.walk_to(HOME_POS)
 
         # Pull next event from the mirror queue when the lobster is free.
         if lobster.state == LobsterState.IDLE and lobster.pickup_task is None:
@@ -1327,10 +1615,11 @@ def main() -> int:
         ),
     )
 
-    print("meet_a_claw overlay — desktop-native (transparent, click-through except gate).")
+    print("grab_a_claw overlay — desktop-native (transparent, click-through except trash bin).")
     print(f"  gate state file:   {GATE_STATE_FILE}")
     print(f"  host demo desktop: {HOST_DEMO_DIR}")
-    print(f"  click the gate to toggle.  Keys (when overlay has focus): SPACE/R/B/P/D/F/ESC.")
+    print(f"  click the bin to lock/unlock trash (red=locked, yellow=pending, green=unlocked).")
+    print(f"  Keys (when overlay has focus): SPACE/R/B/P/D/F/ESC.")
     try:
         pyglet.app.run()
     finally:

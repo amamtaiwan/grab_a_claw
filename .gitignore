@@ -26,6 +26,20 @@ data/
 *.sqlite
 runs.db
 
+# Fine-tune track (bonus experiment) — exclude vendored repos, venvs,
+# binary checkpoints, and training logs. Keep generator script, single-GPU
+# YAML, chat template, and the 5K SFT dataset so judges can reproduce.
+train/Automodel/
+train/nemotron-recipe/
+train/vllm-venv/
+train/.venv/
+train/logs/
+train/checkpoints/
+
+# Override the global data/ ignore so the SFT JSONLs ARE tracked.
+!train/data/
+!train/data/**
+
 # Logs
 *.log
 nemoclaw-install.log

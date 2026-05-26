@@ -40,7 +40,7 @@ Why: the demo's core argument is "the policy stopped a real action on the user's
 ### D2. Agent ↔ animation communication — **picked: filesystem watcher + sandbox-state polling**
 
 Two channels, both file-based, both auditable:
-- **Gate state**: the host-side `/tmp/meet_a_claw-gate-state` file written by `grant-trash.sh` / `revoke-trash.sh`. The overlay watches it with `watchdog.observers.polling.PollingObserver` (500 ms interval — avoids inotify saturation on dev boxes with lots of file watchers). When the file changes, the overlay flips the gate visual.
+- **Gate state**: the host-side `/tmp/grab_a_claw-gate-state` file written by `grant-trash.sh` / `revoke-trash.sh`. The overlay watches it with `watchdog.observers.polling.PollingObserver` (500 ms interval — avoids inotify saturation on dev boxes with lots of file watchers). When the file changes, the overlay flips the gate visual.
 - **Mirror trigger**: a daemon thread polls the sandbox via `docker exec ls` every ~1.5 s, looking for new files in `/sandbox/demo/sorted/<bucket>/` and `/sandbox/.openclaw/trash/`. For each unseen sandbox arrival, it mirrors the equivalent host action (`shutil.move` or `gio trash`).
 
 We considered WebSockets / unix sockets for lower latency, but the polling overhead is invisible at human scale and the filesystem channel doesn't need NemoClaw network policy carve-outs.

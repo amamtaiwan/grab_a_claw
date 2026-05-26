@@ -23,7 +23,7 @@
 
 preset:
   name: trash-writable
-  description: "Open the trash gate — allows the meet_a_claw agent to move files into /opt/agent-trash. Default deny is restored when this preset is removed."
+  description: "Open the trash gate — allows the grab_a_claw agent to move files into /opt/agent-trash. Default deny is restored when this preset is removed."
 
 filesystem_policy:
   read_write:

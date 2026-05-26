@@ -1,0 +1,155 @@
+# Single-GPU LoRA fine-tune for Nemotron-3-Nano-30B-A3B-BF16, adapted from
+# Automodel/examples/llm_finetune/nemotron/customizer_nemotron_nano_peft.yaml.
+#
+# Goal: teach the model the canonical desktop-arrange JSON intent schema
+# so it stops drifting to "intent"/"target"/"position" key variants.
+#
+# Hardware:    1 x RTX PRO 6000 Blackwell 96 GB (GPU 0).
+#              Ollama Super must be stopped before launch (90 GB hostage).
+# Data:        train/data/train.chatml.jsonl + eval.chatml.jsonl
+# Base model:  <nano-bf16-path>
+#
+# Launch:
+#   cd train/Automodel
+#   source .venv/bin/activate
+#   torchrun --nproc-per-node=1 examples/llm_finetune/finetune.py \
+#     --config ../nano-peft-singlegpu.yaml
+
+recipe: TrainFinetuneRecipeForNextTokenPrediction
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 30
+
+rng:
+  _target_: nemo_automodel.components.training.rng.StatefulRNG
+  seed: 1111
+  ranked: true
+
+model:
+  _target_: nemo_automodel.NeMoAutoModelForCausalLM.from_pretrained
+  pretrained_model_name_or_path: <nano-bf16-path>
+  torch_dtype: auto
+  trust_remote_code: true
+  attn_implementation: sdpa
+  # QLoRA — base weights in 4-bit (NF4) to fit single 96 GB Blackwell.
+  # The model is 30B BF16 ≈ 60GB; 4-bit collapses it to ~15GB so we
+  # have headroom for the loader's transient state_dict transpose copy.
+  # LoRA adapters and gradients stay in BF16 for training stability.
+  quantization_config:
+    _target_: transformers.BitsAndBytesConfig
+    load_in_4bit: true
+    bnb_4bit_quant_type: nf4
+    bnb_4bit_compute_dtype: bfloat16
+    bnb_4bit_use_double_quant: true
+    # Mamba2 kernels (mamba_ssm.ssd_combined) reach into raw weight
+    # tensors via custom CUDA paths; bnb's quantized blob is the wrong
+    # shape for them. Skip mamba projections + conv + state params and
+    # keep them in BF16. Same for attention projs (small share) and the
+    # embedding / LM-head. The bulk of params (128 MoE experts × up/down
+    # projections) stay quantized — that's where the memory wins are.
+    llm_int8_skip_modules:
+      - in_proj
+      - out_proj
+      - conv1d
+      - A_log
+      - D
+      - dt_bias
+      - x_proj
+      - norm
+      - embed_tokens
+      - lm_head
+      - q_proj
+      - k_proj
+      - v_proj
+      - o_proj
+      - router
+      - gate
+
+distributed:
+  _target_: nemo_automodel.components.distributed.fsdp2.FSDP2Manager
+  dp_size: null
+  tp_size: 1
+  pp_size: 1
+  cp_size: 1
+  ep_size: 1                # single GPU holds all 128 experts (vs official ep=4)
+  sequence_parallel: false
+
+step_scheduler:
+  global_batch_size: 8
+  local_batch_size: 1
+  num_epochs: 2
+  max_steps: 1200           # ~2 epochs over 4500 train / global_batch=8 ≈ 1126 steps; r=128 needs more updates
+  val_every_steps: 150
+  ckpt_every_steps: 150
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-4                # bumped from 5e-6 — LoRA-only on small dataset
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-08
+
+lr_scheduler:
+  lr_decay_style: cosine
+  lr_warmup_steps: 20
+
+checkpoint:
+  enabled: true
+  model_save_format: safetensors
+  checkpoint_dir: <repo-root>/train/checkpoints/nano-lora-schema-v5
+  save_consolidated: true
+  dequantize_base_checkpoint: false  # base loaded in 4-bit NF4; only LoRA adapter saved
+
+dataset:
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: <repo-root>/train/data/train.chatml.jsonl
+  seq_length: 2048
+  padding: do_not_pad
+  truncation: longest_first
+  chat_template: <repo-root>/train/chat_template_no_thinking.jinja
+
+validation_dataset:
+  _target_: nemo_automodel.components.datasets.llm.chat_dataset.ChatDataset
+  path_or_dataset_id: <repo-root>/train/data/eval.chatml.jsonl
+  seq_length: 2048
+  padding: do_not_pad
+  truncation: longest_first
+  chat_template: <repo-root>/train/chat_template_no_thinking.jinja
+
+dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+  shuffle: true
+
+validation_dataloader:
+  _target_: torchdata.stateful_dataloader.StatefulDataLoader
+  collate_fn: nemo_automodel.components.datasets.utils.default_collater
+
+peft:
+  _target_: nemo_automodel.components._peft.lora.PeftConfig
+  dim: 128            # 16 → 128: 8x more LoRA capacity for compositional tasks
+  alpha: 256          # keep alpha/r ratio at 2 (was 32/16=2 → now 256/128=2)
+  dropout: 0.05
+  use_triton: true
+  # Exclude mamba out_proj (custom kernel) AND every MoE expert
+  # up_proj/down_proj (they're in bnb 4-bit; NeMo's LoRA adapter
+  # forward path crashes when it tries to multiply BF16 LoRA against
+  # an unsigned-char quantized weight). LoRA still attaches to:
+  # attention q/k/v/o, mamba in_proj, router, gate, and norm/embed
+  # (all kept in BF16 via the bnb skip list above).
+  exclude_modules:
+    - "*.out_proj"
+    - "*experts*.up_proj"
+    - "*experts*.down_proj"
+    - "lm_head"            # LoRA on lm_head corrupted JSON colon emission
+                           # under vLLM's Punica forward (worked in training
+                           # but not at serve). Keep lm_head pristine.
+    - "*.lm_head"
+
+loss_fn:
+  _target_: nemo_automodel.components.loss.masked_ce.MaskedCrossEntropy
+
+parallelizer:
+  _target_: nemo_automodel.components.moe.parallelizer.parallelize_model
+  activation_checkpointing: true   # CRITICAL on single GPU; recipe defaults to false

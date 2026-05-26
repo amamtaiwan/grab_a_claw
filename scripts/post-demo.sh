@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# post-demo.sh — restore the operator's desktop after a meet_a_claw demo.
+# post-demo.sh — restore the operator's desktop after a grab_a_claw demo.
 #
 # Reverses pre-demo.sh:
 #   1. Sweeps the seven demo files out of ~/Desktop and out of every dest
 #      directory the overlay mirror could have moved them into.
 #   2. Moves the operator's original desktop files back from the most
-#      recent ~/.meet_a_claw-stash/<timestamp>/ directory.
+#      recent ~/.grab_a_claw-stash/<timestamp>/ directory.
 #   3. Removes the empty stash directory and the pointer.
 #
 # Usage:
@@ -19,7 +19,7 @@ set -uo pipefail
 HOST_DESKTOP="$HOME/Desktop"
 DEMO_FILES=(screenshot_2026-05-20.png old_disk.iso draft.pdf temp_notes.tmp tax_receipts_2024.zip random.log empty_file.txt)
 HOST_DESTS=("$HOME/Pictures" "$HOME/Documents" "$HOME/Downloads" "$HOME/Videos" "$HOME/Documents/code")
-STASH_POINTER="$HOME/.meet_a_claw-last-stash"
+STASH_POINTER="$HOME/.grab_a_claw-last-stash"
 
 hr() { printf "\n\033[36m── %s ──\033[0m\n" "$*"; }
 ok() { printf "\033[32m✓ %s\033[0m\n" "$*"; }
@@ -78,7 +78,7 @@ else
 fi
 
 hr "4. cleanup tmp markers + sandbox intents"
-rm -f /tmp/meet_a_claw-positions.json /tmp/meet_a_claw-gate-state
+rm -f /tmp/grab_a_claw-positions.json /tmp/grab_a_claw-gate-state
 SBX_CONTAINER=$(docker ps --filter name=openshell-hack-agent --format '{{.Names}}' 2>/dev/null | head -1)
 if [ -n "$SBX_CONTAINER" ]; then
   docker exec --user sandbox "$SBX_CONTAINER" bash -c 'rm -f /sandbox/.openclaw/state/desktop-intents.jsonl /sandbox/.openclaw/state/last-tidy-denied.txt /sandbox/.openclaw/state/desktop-files.txt' 2>/dev/null || true

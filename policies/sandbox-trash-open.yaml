@@ -1,4 +1,4 @@
-# meet_a_claw — gate-open state.
+# grab_a_claw — gate-open state.
 # Built from sandbox-current.yaml (= dump of live policy) + /opt/agent-trash.
 # Apply: openshell policy set hack-agent --policy ./policies/sandbox-trash-open.yaml --wait
 # Reset: openshell policy set hack-agent --policy ./policies/sandbox-current.yaml --wait

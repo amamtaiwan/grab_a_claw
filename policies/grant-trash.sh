@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# grant-trash.sh — open the trash gate for a meet_a_claw sandbox.
+# grant-trash.sh — open the trash gate for a grab_a_claw sandbox.
 #
 # Application-layer consent for the desktop-trash skill. Atomically does:
 #   1. Touches /sandbox/.openclaw/trash-approved inside the sandbox
@@ -29,6 +29,6 @@ echo "[grant-trash] applying NemoClaw preset (audit signal only — filesystem g
 "$NEMOCLAW" "$SANDBOX" policy-add --from-file "$REPO_DIR/policies/trash-writable.yaml" --yes 2>&1 | tail -8 || true
 
 echo "[grant-trash] writing host-side gate state for the overlay"
-echo "open" > /tmp/meet_a_claw-gate-state
+echo "open" > /tmp/grab_a_claw-gate-state
 
 echo "[grant-trash] gate is OPEN. Revoke with: ./policies/revoke-trash.sh $SANDBOX"

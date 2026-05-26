@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# pre-demo.sh — 60-second pre-flight before a live meet_a_claw demo.
+# pre-demo.sh — 60-second pre-flight before a live grab_a_claw demo.
 #
 # Run this in the operator terminal immediately before pitching. It:
 #   1. Replants the demo desktop into a known state (7 files, mixed types
@@ -30,10 +30,10 @@ ok() { printf "\033[32m✓ %s\033[0m\n" "$*"; }
 HOST_DESKTOP="$HOME/Desktop"
 DEMO_FILES=(screenshot_2026-05-20.png old_disk.iso draft.pdf temp_notes.tmp tax_receipts_2024.zip random.log empty_file.txt)
 HOST_DESTS=("$HOME/Pictures" "$HOME/Documents" "$HOME/Downloads" "$HOME/Videos" "$HOME/Documents/code")
-STASH_ROOT="$HOME/.meet_a_claw-stash"
+STASH_ROOT="$HOME/.grab_a_claw-stash"
 STASH_DIR="$STASH_ROOT/$(date +%Y%m%d-%H%M%S)"
-STASH_POINTER="$HOME/.meet_a_claw-last-stash"
-POSITIONS_FILE="/tmp/meet_a_claw-positions.json"
+STASH_POINTER="$HOME/.grab_a_claw-last-stash"
+POSITIONS_FILE="/tmp/grab_a_claw-positions.json"
 
 hr "0_pre. wipe sandbox-internal state from previous takes (intents, denied list)"
 SBX_CONTAINER=$(docker ps --filter "name=openshell-$SANDBOX" --format '{{.Names}}' | head -1)
@@ -62,7 +62,7 @@ ok "host destinations swept"
 
 hr "0b. stash existing top-level desktop files (run post-demo.sh to restore)"
 # Only move regular files at the top level of ~/Desktop. Subfolders
-# (including ~/Desktop/meet_a_claw-demo if it exists from old takes) are
+# (including ~/Desktop/grab_a_claw-demo if it exists from old takes) are
 # left alone. Symlinks count as files — we stash them too. NOTHING
 # touches subfolders.
 mkdir -p "$STASH_DIR"
@@ -193,20 +193,41 @@ cat <<EOF
   Dashboard:  http://127.0.0.1:18789/#token=$TOKEN
               (treat the URL like a password — do not share or screen-record uncensored)
 
-  Live demo cheat-sheet (3 beats):
-    A. In dashboard chat, type:
+  Live demo cheat-sheet:
+
+  ── Path A: bulk tidy (desktop-tidy skill, gate matters) ──
+    A1. In dashboard chat, type:
          Use desktop-tidy to clean my desktop
-       → agent returns markdown with 3 moves + 4 trash DENIED + remediation.
+       → 3 moves + 4 trash DENIED (gate closed) + lobster bounces.
 
-    B. In this terminal, type:
+    A2. In this terminal, type:
          ./policies/grant-trash.sh $SANDBOX
-       → overlay gate flips RED → GREEN; OCSF policy event lands.
+       → overlay trash bin flips RED → GREEN; OCSF policy event lands.
 
-    C. In dashboard chat, type:
+    A3. In dashboard chat, type:
          Tidy again
        → agent re-runs, this time the 4 trash succeed.
 
-  Recovery (if the agent stalls > 60s):
+  ── Path B: natural language arrange (desktop-arrange skill) ──
+    Always cite the example you want — Nemotron is most reliable when
+    told exactly which snippet to copy.
+
+    B1. Single move (Example 1):
+         Use desktop-arrange skill, Example 1: move draft.pdf to upper-right.
+       → agent emits set_position x=1440 y=310; lobster carries draft.pdf
+         to upper-right; broker prints [broker] set_position ...
+
+    B2. Trash with gate (Example 2):
+         Use desktop-arrange skill, Example 2: trash temp_notes.tmp.
+       → if gate closed → lobster bounce + "BLOCKED" log;
+         after grant-trash.sh → file disappears into Trash.
+
+    B3. Grid arrange (Example 3):
+         Use desktop-arrange skill, Example 3: arrange all png files A-Z
+         in the upper-right column.
+       → multi-intent printf; icons stack y=180, 310, 440 ...
+
+  Recovery (if the agent stalls > 60s on Path A):
        ./scripts/run-demo.sh $SANDBOX
      produces identical markdown via direct bash — same Landlock, same
      marker check, same audit log.

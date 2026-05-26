@@ -8,13 +8,13 @@ is real, but the audience's patience isn't infinite.
 ## Setup (off-camera, 60 seconds)
 
 ```bash
-cd /media/ufoai/DATAs3/fromtrx51/workspace/meet_a_claw
+cd <repo-root>
 ./scripts/pre-demo.sh hack-agent
 ```
 
 That command:
 1. Sweeps any leftover demo-file names out of `~/Pictures`, `~/Documents`, `~/Downloads`, `~/Videos`, `~/Documents/code` (only file names we plant — never touches the user's real files).
-2. Replants `~/Desktop/meet_a_claw-demo/` with a known 7 files on the **host** desktop.
+2. Replants `~/Desktop/grab_a_claw-demo/` with a known 7 files on the **host** desktop.
 3. Replants `/sandbox/demo/desktop/` with the same 7 files inside the sandbox.
 4. Deploys `sandbox-bin/tidy.sh` into the sandbox at `/sandbox/.openclaw/bin/tidy.sh`.
 5. Revokes the trash gate (marker removed, NemoClaw preset removed, host-side state file set to `closed`).
@@ -23,7 +23,7 @@ That command:
 
 Open in parallel:
 - **Browser**: paste the dashboard URL (token embedded).
-- **Files browser** (e.g. `nautilus ~/Desktop/meet_a_claw-demo`) — so the audience sees the host folder drain in real time as the sandbox tidies.
+- **Files browser** (e.g. `nautilus ~/Desktop/grab_a_claw-demo`) — so the audience sees the host folder drain in real time as the sandbox tidies.
 - **Overlay terminal**: `cd ui && .venv/bin/python overlay.py` — lobster + the clickable gate.
 - **Operator terminal** (this one): kept for recovery only; the demo itself drives via the dashboard + a click on the gate.
 
@@ -60,7 +60,7 @@ What the audience sees:
     - empty_file.txt
   ```
 
-- **Files browser** showing `~/Desktop/meet_a_claw-demo/`: within ~2 s of the Markdown landing, three files vanish from the host folder and appear in `~/Pictures`, `~/Documents`, `~/Downloads`. The remaining four trash candidates stay put. The overlay's top-right label briefly shows each `mirror: <file> → moved → Pictures/` etc.
+- **Files browser** showing `~/Desktop/grab_a_claw-demo/`: within ~2 s of the Markdown landing, three files vanish from the host folder and appear in `~/Pictures`, `~/Documents`, `~/Downloads`. The remaining four trash candidates stay put. The overlay's top-right label briefly shows each `mirror: <file> → moved → Pictures/` etc.
 
 Narration:
 > "The agent classified seven files and acted on each. Three were moved into the right host folders — that's not a fake animation, that's `gio mv` on real files; you're watching the host desktop. The four trash candidates? Notice the dashboard says **denied by policy**. The agent didn't escape, didn't retry, didn't 'figure out a workaround.' It reported what happened and what would unblock it."
@@ -94,7 +94,7 @@ What the audience sees:
   - empty_file.txt
 ```
 
-And, in their **Files browser** showing `~/Desktop/meet_a_claw-demo/`, the four files **disappear in real time** (`gio trash` puts them in the system trash bin). The overlay's top-right label flickers `mirror: old_disk.iso → trashed (gio)` etc. as each one fires.
+And, in their **Files browser** showing `~/Desktop/grab_a_claw-demo/`, the four files **disappear in real time** (`gio trash` puts them in the system trash bin). The overlay's top-right label flickers `mirror: old_disk.iso → trashed (gio)` etc. as each one fires.
 
 Narration:
 > "Same agent, same four candidates, but this time the marker is present and Landlock lets the writes through. The sandbox tidies; the overlay's mirror thread sees the sandbox state change and replays the equivalent action on the host. Files actually leave the desktop, into the user's actual trash. The whole loop — agent reasoning, policy enforcement, gate click, retry, host mirror — happened on this box. No cloud round-trip, no SaaS, no opaque magic."
@@ -137,7 +137,7 @@ the same Markdown summary, and respects the same policy. Narrate as:
 ```
 
 Idempotent. Runs in ~10 seconds when the model is already warm. Reverts:
-- Host `~/Desktop/meet_a_claw-demo/` to the 7 planted files.
+- Host `~/Desktop/grab_a_claw-demo/` to the 7 planted files.
 - Demo-file copies in `~/Pictures` / `~/Documents` / `~/Downloads` / `~/Videos` / `~/Documents/code` swept (only our planted names — your real files in those dirs are untouched).
 - Anything already in the user's Trash bin from previous takes — manually empty if desired.
 - Sandbox `/sandbox/demo/desktop/` to the same 7 files.

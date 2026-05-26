@@ -8,7 +8,7 @@ metadata: { "openclaw": { "openclaw": { "emoji": "🦞" } } }
 
 Goal: trash a single file inside the sandbox. **Application-layer consent gate**: this skill checks for a marker file before attempting the move, and refuses with a structured response when the marker is absent. The check is the deliberate friction between "the agent wants to delete this" and "deletion actually happens."
 
-This is the application-layer half of meet_a_claw's dual guardrail design. The kernel-layer half (Landlock) blocks any write outside the sandbox unconditionally; this skill governs destructive operations *inside* the sandbox.
+This is the application-layer half of grab_a_claw's dual guardrail design. The kernel-layer half (Landlock) blocks any write outside the sandbox unconditionally; this skill governs destructive operations *inside* the sandbox.
 
 ## Paths
 
