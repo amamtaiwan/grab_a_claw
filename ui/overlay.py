@@ -1148,8 +1148,16 @@ def main() -> int:
     STAGE_W = max(400, screen_w - margin_left - margin_right)
     STAGE_H = max(300, screen_h - margin_top - margin_bottom)
 
+    # Pyglet uses bottom-left origin; top-of-screen lives at high pyglet y.
+    # Lobster home stays in the lower-left (visible "off-stage" area below
+    # the sort folders) but the trash bin moves up to the TOP-right corner.
+    # That way a file→bin carry stays horizontal at the top of the screen
+    # and doesn't visually cross the sort-folder row mid-screen (which made
+    # the lobster look like it was dropping into a folder).
     HOME_POS = (max(80, int(STAGE_W * 0.06)), max(120, int(STAGE_H * 0.18)))
-    TRASH_ZONE_POS = (int(STAGE_W * 0.86), HOME_POS[1])
+    # Far-right of the window so it doesn't horizontally overlap the
+    # rightmost demo file (planted around screen x ≈ 1662 by pre-demo.sh).
+    TRASH_ZONE_POS = (STAGE_W - 90, STAGE_H - 130)
     # Single trash-bin widget at TRASH_ZONE_POS: visualises policy state
     # (red=closed / yellow=pending / green=open) AND is the drop target.
     # The GATE_* names are reused so existing bounce/hitbox/SHAPE code
@@ -1242,6 +1250,7 @@ def main() -> int:
           ('vanished', name, old_xy)         — agent removed file; animate to trash zone
         """
         kind = event[0]
+        print(f"[event] {event}", file=sys.stderr)
         if kind in ("move", "trash"):
             _, bucket, filename = event
             source = icon_positions_pyglet.get(filename)
