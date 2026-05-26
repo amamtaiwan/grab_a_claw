@@ -99,6 +99,12 @@ The terminal where `overlay.py` runs prints `[broker] ...` lines whenever the ag
 
 ### A. Bulk tidy with a closed trash gate (`desktop-tidy` skill)
 
+
+
+https://github.com/user-attachments/assets/ba184782-f180-46f8-81c2-4b843e729432
+
+
+
 ```
 Use desktop-tidy to clean my desktop
 ```
@@ -106,6 +112,11 @@ Use desktop-tidy to clean my desktop
 Expected: agent calls `openclaw:core:exec` once to run the sandbox-internal `/sandbox/.openclaw/bin/tidy.sh`. Three files move into the sorted folders; four trash candidates are **denied by policy** (the lobster runs at each one and bounces off the locked bin, which flashes bright red).
 
 ### B1. Single-file move via natural language (`desktop-arrange` skill)
+
+
+https://github.com/user-attachments/assets/3db4d671-e13d-4fa4-a705-517ed408636f
+
+
 
 ```
 Use desktop-arrange to move draft.pdf to upper-right.
@@ -118,6 +129,11 @@ Expected:
 - The lobster then walks home.
 
 ### B2. Trash with the gate locked → bin flash + lobster bounce
+
+
+https://github.com/user-attachments/assets/94c11648-9bbc-4478-b8c4-9c5bbc39e08b
+
+
 
 ```
 Use desktop-arrange to trash temp_notes.tmp.
@@ -138,6 +154,11 @@ Use desktop-arrange to trash temp_notes.tmp.
 Expected this time: lobster reaches the bin, drops the file in, broker runs `gio trash`, the file disappears from the desktop into XDG trash.
 
 ### B3. Compositional layout — broker meta-arrange fan-out
+
+
+https://github.com/user-attachments/assets/3fd2f7ec-3569-48bb-80c4-a178dffc17bb
+
+
 
 ```
 Use desktop-arrange to arrange all files A-Z in upper-right.
