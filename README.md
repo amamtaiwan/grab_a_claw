@@ -100,9 +100,7 @@ The terminal where `overlay.py` runs prints `[broker] ...` lines whenever the ag
 ### A. Bulk tidy with a closed trash gate (`desktop-tidy` skill)
 
 
-
-https://github.com/user-attachments/assets/ba184782-f180-46f8-81c2-4b843e729432
-
+https://github.com/user-attachments/assets/d2282092-33bd-4f04-ac8b-180a25e1038b
 
 
 ```
