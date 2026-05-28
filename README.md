@@ -112,14 +112,22 @@ raw model port is then open on the LAN.)
 ### Machine B — sandbox + agent + lobster
 
 ```bash
-# B1. Prereqs: Docker (user in `docker` group), NVIDIA driver ≥ 575, NemoClaw.
-#     Install NemoClaw pinned to the audited commit (not the floating `latest`):
+# B1. Prereqs: Docker + NVIDIA driver ≥ 575. Work on a normal POSIX path under
+#     $HOME — NOT an NTFS / foreign-owned / network mount, or git and venv fail
+#     on chmod ("Operation not permitted"). Fetch + run the NemoClaw installer,
+#     pinned to the audited commit (not the floating `latest`):
+cd ~
+curl -fsSL https://www.nvidia.com/nemoclaw.sh -o nemoclaw-install.sh
 NEMOCLAW_INSTALL_REF=0f48781072b61041b0a53d57ad1845e85e7c634a \
 NEMOCLAW_SANDBOX_NAME=hack-agent NEMOCLAW_PROVIDER=ollama \
 NEMOCLAW_POLICY_MODE=suggested bash nemoclaw-install.sh
+#     The installer is interactive (sudo for Docker/nvidia-ctk/`docker` group).
 #     During onboarding pick the SMALLEST model — Machine B does not serve Super,
-#     it only needs a sandbox. (Optionally `ollama pull nemotron-3-nano:latest`
-#     here as a network-drop fallback; see docs/DEMO_ARCH1.md.)
+#     it only needs a sandbox (Nano doubles as the network-drop fallback; see
+#     docs/DEMO_ARCH1.md). After it finishes, activate the group: `newgrp docker`
+#     (or re-login), then confirm the sandbox is up before B2:
+#       nemoclaw list
+#       docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}'
 
 # B2. Point the sandbox's inference at Machine A (the one real change vs main):
 SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
