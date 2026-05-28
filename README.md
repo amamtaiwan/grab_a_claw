@@ -1,3 +1,14 @@
+> # ⚠️ DEMO-ONLY BRANCH — PROBABLY UNSAFE ⚠️
+> **`demo-arch1-remote-inference`** splits the stack so the model runs on a
+> remote workstation (over a Tailscale tunnel) while the sandbox + agent +
+> overlay run on the booth DGX Spark. **This intentionally breaks the network
+> isolation guarantee** that `main` relies on: the sandbox's inference egress
+> is pointed at a remote endpoint instead of being locked to `inference.local`.
+> Do NOT merge into `main`. Do NOT run outside the controlled GTC Taipei demo.
+> See [docs/DEMO_ARCH1.md](./docs/DEMO_ARCH1.md) for the threat-model caveats.
+
+---
+
 # 🏆🦞 NVIDIA Agent Hackathon WINNER 🦞🏆
 
 ## 🎉 We won!! 🎉 Catch the live demo at **GTC Taipei — Thursday, June 4, 16:00** 🚀🇹🇼
