@@ -1,8 +1,14 @@
+# 🏆🦞 NVIDIA Agent Hackathon WINNER 🦞🏆
+
+## 🎉 We won!! 🎉 Catch the live demo at **GTC Taipei — Thursday, June 4, 16:00** 🚀🇹🇼
+
+---
+
 # grab_a_claw
 
 > A local AI agent that tidies your real Ubuntu desktop — embodied as a Q-version lobster mascot 🦞 walking across the screen — with a NemoClaw policy-enforced trash bin the agent literally cannot punch through.
 
-NVIDIA Agent Hackathon submission · due **2026-05-28** · Apache-2.0.
+🥇 **NVIDIA Agent Hackathon Winner** · 🎤 Live demo @ GTC Taipei, Thu Jun 4 @ 16:00 · Apache-2.0.
 
 ---
 
