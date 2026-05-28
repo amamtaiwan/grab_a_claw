@@ -196,12 +196,17 @@ A trusts it.
 A_USER=ufoai           # the Machine A account that trusts your key (A's login user)
 A_HOST=192.168.0.2     # A's LAN IP at home; A's public IP / DDNS at the venue
 A_SSH_PORT=22          # the router-forwarded SSH port at the venue
-# Bind 0.0.0.0:8000 so the sandbox can reach it via host.openshell.internal.
-# 8000 is already on the local-inference allowlist, so NO custom egress policy
-# is needed. (`autossh` instead of `ssh` auto-reconnects if the link drops.)
-ssh -i ~/.ssh/grabclaw_demo -fN -L 0.0.0.0:8000:127.0.0.1:11434 "$A_USER@$A_HOST" -p "$A_SSH_PORT"
-curl -s http://127.0.0.1:8000/v1/models    # → should list nemotron-3-super:latest
+# Bind :8000 ONLY to the docker-bridge gateway (what host.openshell.internal
+# resolves to) — the sandbox reaches it, but Machine B's physical LAN does NOT.
+# (A 0.0.0.0 bind would hand A's Super to anyone on the venue network, keyless:
+# the SSH key guards the B→A hop, but this listener has no auth of its own.)
+# 8000 is already on the local-inference egress allowlist → no custom policy.
+SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
+GW=$(docker exec "$SBX" getent hosts host.openshell.internal | awk '{print $1}')   # e.g. 172.18.0.1
+ssh -i ~/.ssh/grabclaw_demo -fN -L "$GW":8000:127.0.0.1:11434 "$A_USER@$A_HOST" -p "$A_SSH_PORT"
+curl -s "http://$GW:8000/v1/models"        # → should list nemotron-3-super:latest
 ```
+(`autossh` instead of `ssh` auto-reconnects if the link drops mid-demo.)
 
 **B3 — wire the sandbox to the local tunnel, get the repo, run (single paste):**
 ```bash
@@ -259,7 +264,7 @@ keypair on Machine B and send you only the **public** key (A3). No private key,
 even if it leaks the blast radius is exactly "talk to A's Ollama" — and you
 revoke it by deleting one line from `~/.ssh/authorized_keys`.
 
-**Verify end to end:** B2-ii's `curl http://127.0.0.1:8000/v1/models` lists Super;
+**Verify end to end:** B2-ii's `curl "http://$GW:8000/v1/models"` lists Super;
 then a dashboard B1 prompt moves the lobster while **Machine A's** GPU loads
 Super (~90 GB) — proving B's agent reached A through the tunnel.
 

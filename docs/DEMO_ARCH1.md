@@ -76,12 +76,18 @@ public IP / DDNS + that port. Only SSH is ever exposed; `:11434` stays local.
 ### 2. Spark — open the SSH tunnel
 ```bash
 # generate ONCE; send only the .pub to the workstation operator (step 1)
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
 [ -f ~/.ssh/grabclaw_demo ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/grabclaw_demo -C demo-forward
+A_USER=ufoai           # the workstation account that trusts the key
 A_HOST=192.168.0.2     # workstation LAN IP at home; public IP / DDNS at the venue
 A_SSH_PORT=22          # the router-forwarded SSH port at the venue
-# bind 0.0.0.0:8000 so the sandbox can reach it via host.openshell.internal
-ssh -i ~/.ssh/grabclaw_demo -fN -L 0.0.0.0:8000:127.0.0.1:11434 demo@"$A_HOST" -p "$A_SSH_PORT"
-curl -s http://127.0.0.1:8000/v1/models          # → lists nemotron-3-super:latest
+# Bind :8000 ONLY to the docker-bridge gateway (= host.openshell.internal), so
+# the sandbox reaches it but the venue LAN cannot — the SSH key guards B→A, but
+# this listener has no auth of its own; a 0.0.0.0 bind would expose Super keyless.
+SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
+GW=$(docker exec "$SBX" getent hosts host.openshell.internal | awk '{print $1}')   # e.g. 172.18.0.1
+ssh -i ~/.ssh/grabclaw_demo -fN -L "$GW":8000:127.0.0.1:11434 "$A_USER@$A_HOST" -p "$A_SSH_PORT"
+curl -s "http://$GW:8000/v1/models"              # → lists nemotron-3-super:latest
 ```
 (`autossh` instead of `ssh` auto-reconnects if the link drops mid-demo.)
 
@@ -162,11 +168,11 @@ no config flag needed:
 ## Demo-day runbook
 
 1. Workstation at home: Ollama up, Super warm; sshd up, forward-only key trusted.
-2. Spark at booth: `ssh -L` tunnel up; `curl http://127.0.0.1:8000/v1/models` lists Super.
+2. Spark at booth: `ssh -L` tunnel up; `curl "http://$GW:8000/v1/models"` lists Super (`$GW` from step 2).
 3. Spark: `./scripts/pre-demo.sh hack-agent` (seeds demo desktop, revokes gate).
 4. Spark: launch overlay in a shell **with docker group active** (`newgrp docker` first).
 5. Dashboard: run A → B1 → B2(locked→unlock)→ B3.
-6. If a turn hangs > 60 s: check the tunnel (`curl http://127.0.0.1:8000/v1/models`;
+6. If a turn hangs > 60 s: check the tunnel (`curl "http://$GW:8000/v1/models"`;
    is the `ssh -L` still up?); if the workstation is unreachable, do step 4
    "Spark — local Nano fallback".
 7. Ultimate fallback: play the recorded demo videos (embedded in `main`'s README).
