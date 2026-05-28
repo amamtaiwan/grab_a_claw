@@ -36,7 +36,7 @@ STASH_POINTER="$HOME/.grab_a_claw-last-stash"
 POSITIONS_FILE="/tmp/grab_a_claw-positions.json"
 
 hr "0_pre. wipe sandbox-internal state from previous takes (intents, denied list)"
-SBX_CONTAINER=$(docker ps --filter "name=openshell-$SANDBOX" --format '{{.Names}}' | head -1)
+SBX_CONTAINER=$(docker ps --filter "label=openshell.ai/sandbox-name=$SANDBOX" --format '{{.Names}}' | head -1)
 if [ -n "$SBX_CONTAINER" ]; then
   docker exec --user sandbox "$SBX_CONTAINER" bash -c 'mkdir -p /sandbox/.openclaw/state; rm -f /sandbox/.openclaw/state/desktop-intents.jsonl /sandbox/.openclaw/state/last-tidy-denied.txt /sandbox/.openclaw/state/desktop-files.txt; touch /sandbox/.openclaw/state/desktop-intents.jsonl' 2>/dev/null || true
   ok "sandbox state cleared"
@@ -162,7 +162,7 @@ done
 
 hr "0c. deploy sandbox-internal tidy.sh (read by desktop-tidy skill)"
 "$NEMOCLAW" "$SANDBOX" exec --timeout 15 -- bash -c 'mkdir -p /sandbox/.openclaw/bin'
-CONTAINER=$(docker ps --filter "name=openshell-$SANDBOX" --format '{{.Names}}' | head -1)
+CONTAINER=$(docker ps --filter "label=openshell.ai/sandbox-name=$SANDBOX" --format '{{.Names}}' | head -1)
 if [ -z "$CONTAINER" ]; then
   warn "docker access missing or sandbox container not found; tidy.sh deploy skipped"
 else

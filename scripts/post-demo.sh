@@ -79,7 +79,7 @@ fi
 
 hr "4. cleanup tmp markers + sandbox intents"
 rm -f /tmp/grab_a_claw-positions.json /tmp/grab_a_claw-gate-state
-SBX_CONTAINER=$(docker ps --filter name=openshell-hack-agent --format '{{.Names}}' 2>/dev/null | head -1)
+SBX_CONTAINER=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' 2>/dev/null | head -1)
 if [ -n "$SBX_CONTAINER" ]; then
   docker exec --user sandbox "$SBX_CONTAINER" bash -c 'rm -f /sandbox/.openclaw/state/desktop-intents.jsonl /sandbox/.openclaw/state/last-tidy-denied.txt /sandbox/.openclaw/state/desktop-files.txt' 2>/dev/null || true
 fi

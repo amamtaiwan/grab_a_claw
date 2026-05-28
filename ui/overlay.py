@@ -433,10 +433,14 @@ class GateState:
 
 
 def _find_sandbox_container() -> str | None:
-    """Locate the openshell-hack-agent container by name pattern."""
+    """Locate our sandbox container by its exact OpenShell sandbox-name
+    label. A plain `name=openshell-hack-agent` prefix match would also
+    grab a sibling sandbox like `hack-agent-jarvis` (and `head -1` could
+    pick the wrong one); matching the label value is exact."""
     try:
         out = subprocess.check_output(
-            ["docker", "ps", "--filter", f"name=openshell-{SANDBOX_NAME}",
+            ["docker", "ps",
+             "--filter", f"label=openshell.ai/sandbox-name={SANDBOX_NAME}",
              "--format", "{{.Names}}"],
             text=True, timeout=5,
         ).strip()
