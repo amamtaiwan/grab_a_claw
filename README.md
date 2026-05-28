@@ -59,7 +59,106 @@ I'm an indie hacker. My desktop fills up with screenshots, ISOs, half-written me
 | Disk | 100 GB free for the GGUF, sandbox image, and demo state |
 | Display | X11 session (the overlay uses `_NET_WM_WINDOW_TYPE_DESKTOP` + SHAPE extension; Wayland support is not wired) |
 
-## Setup
+## Split architecture — what each machine runs
+
+On this branch the stack runs across **two machines**, and only text crosses the
+network (the inference request + the JSON intent — a few KB). Everything visual
+and every guardrail runs locally on Machine B.
+
+```
+[ MACHINE A — home workstation, the 96 GB GPU ]        [ MACHINE B — booth box (NVIDIA GPU, Ubuntu 24.04) ]
+  Ollama serving Nemotron 3 Super (+ Nano)      ← LAN / VPN →   NemoClaw sandbox + OpenClaw agent
+  NemoClaw auth-proxy: token-gated /v1                          ui/overlay.py (the lobster) + 4K display
+  on 0.0.0.0:11435  (already LAN-facing)          (text only)   sandbox inference → Machine A
+```
+
+| | Machine A (LLM server) | Machine B (desktop + agent + overlay) |
+|---|---|---|
+| Holds the model | ✅ Super in Ollama (`/usr/share/ollama`) | ❌ remote-only (pull Nano locally just as a fallback) |
+| Runs the sandbox / agent | ❌ | ✅ NemoClaw + OpenShell + OpenClaw |
+| Runs the lobster overlay + display | ❌ | ✅ drives the booth 4K monitor |
+| Exposes on the network | token-gated `/v1` on `:11435` | nothing |
+
+> ⚠️ Pointing Machine B's sandbox at a remote inference endpoint is exactly the
+> network-isolation relaxation this branch is about — see
+> [docs/DEMO_ARCH1.md](./docs/DEMO_ARCH1.md) for the threat model.
+
+### Machine A — serve the model (run in your terminal)
+
+```bash
+# A1. Bring Ollama up (it holds Super + Nano). Needs sudo.
+sudo systemctl start ollama && systemctl is-active ollama
+
+# A2. Warm Super so the first remote turn isn't a cold ~90 GB load.
+curl -s http://127.0.0.1:11434/api/generate \
+  -d '{"model":"nemotron-3-super:latest","prompt":"PONG","stream":false}' >/dev/null
+
+# A3. NemoClaw's auth-proxy already serves an OpenAI-compatible /v1 on
+#     0.0.0.0:11435 (token-gated). Note these three for Machine B:
+hostname -I | awk '{print $1}'        # MACHINE_A_IP  (LAN now; tailnet IP at the venue)
+echo 11435                            # proxy port
+cat ~/.nemoclaw/ollama-proxy-token    # bearer token  (treat as a secret — do not commit/share)
+
+# A4. Confirm the LAN endpoint actually serves Super:
+curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
+  http://MACHINE_A_IP:11435/v1/models      # → should list nemotron-3-super:latest
+```
+
+(If you'd rather not deal with a token, bind Ollama to the LAN instead —
+`sudo systemctl edit ollama` → `OLLAMA_HOST=0.0.0.0:11434` → restart — and have
+Machine B use `http://MACHINE_A_IP:11434/v1` with any `apiKey`. Simpler, but the
+raw model port is then open on the LAN.)
+
+### Machine B — sandbox + agent + lobster
+
+```bash
+# B1. Prereqs: Docker (user in `docker` group), NVIDIA driver ≥ 575, NemoClaw.
+#     Install NemoClaw pinned to the audited commit (not the floating `latest`):
+NEMOCLAW_INSTALL_REF=0f48781072b61041b0a53d57ad1845e85e7c634a \
+NEMOCLAW_SANDBOX_NAME=hack-agent NEMOCLAW_PROVIDER=ollama \
+NEMOCLAW_POLICY_MODE=suggested bash nemoclaw-install.sh
+#     During onboarding pick the SMALLEST model — Machine B does not serve Super,
+#     it only needs a sandbox. (Optionally `ollama pull nemotron-3-nano:latest`
+#     here as a network-drop fallback; see docs/DEMO_ARCH1.md.)
+
+# B2. Point the sandbox's inference at Machine A (the one real change vs main):
+SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
+docker exec --user sandbox -e HOME=/home/sandbox \
+  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
+  openclaw config set models.providers.inference.baseUrl "http://MACHINE_A_IP:11435/v1"
+docker exec --user sandbox -e HOME=/home/sandbox \
+  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
+  openclaw config set models.providers.inference.apiKey "<Machine A's proxy token>"
+
+# B3. Clone this branch, build the overlay env, install skills, disable toolSearch:
+git clone https://github.com/amamtaiwan/grab_a_claw.git
+cd grab_a_claw && git checkout demo-arch1-remote-inference
+python3 -m venv ui/.venv && ui/.venv/bin/pip install -r ui/requirements.txt
+nemoclaw hack-agent skill install ./skills/desktop-tidy
+nemoclaw hack-agent skill install ./skills/desktop-arrange
+docker exec --user sandbox -e HOME=/home/sandbox \
+  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
+  openclaw config set tools.toolSearch false
+docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # apply config
+
+# B4. Run the demo (Machine B's display is the booth screen):
+./scripts/pre-demo.sh hack-agent          # seeds desktop, closes the gate, prints dashboard URL
+ui/.venv/bin/python -u ui/overlay.py       # lobster overlay; 4K auto-detects SCALE=2.0
+```
+
+**Network:** for the home rehearsal set `MACHINE_A_IP` to Machine A's LAN address
+(e.g. `192.168.0.2`). At the venue, `tailscale up` on both boxes and set
+`MACHINE_A_IP` to Machine A's `100.x` tailnet IP — nothing else changes.
+
+**Verify the link from Machine B:** the A4 `curl` (run from B against
+`MACHINE_A_IP:11435`) lists Super; then a dashboard B1 prompt moves the lobster —
+proving B's agent reached A's Super over the network.
+
+## Setup (single-machine reference)
+
+> The block below is the original **one-box** flow (model + sandbox + overlay on
+> the same machine, as on `main`). On this branch use the two-machine split
+> above; this is kept for reference / local testing.
 
 Prereqs: a Linux box with Docker (your user in the `docker` group, so the overlay broker can `docker exec` into the sandbox), an NVIDIA GPU + driver ≥ 575, [NemoClaw installed](https://www.nvidia.com/nemoclaw.sh) (the installer pulls Nemotron-3-Super into Ollama for you).
 

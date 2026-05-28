@@ -61,38 +61,48 @@ Record:
 - `WORKSTATION_TS_IP` = `100.__.__.__`
 - `SPARK_TS_IP`       = `100.__.__.__`
 
-### 2. Workstation — expose Ollama on the tailnet
-By default Ollama binds `127.0.0.1:11434`. Bind it to the tailnet so the Spark
-can reach it (do NOT bind `0.0.0.0` on an untrusted LAN — tailnet only):
+### 2. Workstation — serve the model on the network
+NemoClaw already runs an **auth-proxy** that exposes an OpenAI-compatible `/v1`
+on `0.0.0.0:11435`, **token-gated** (it forwards to the system Ollama on
+`127.0.0.1:11434`, which holds Super + Nano under `/usr/share/ollama`). That
+proxy is already network-facing, so you usually only need to bring Ollama up:
 ```bash
-# workstation: systemd override
-sudo systemctl edit ollama
-# add:
-#   [Service]
-#   Environment="OLLAMA_HOST=0.0.0.0:11434"
-sudo systemctl restart ollama
-# verify from the Spark:
-curl -s http://$WORKSTATION_TS_IP:11434/api/tags | head
+# workstation
+sudo systemctl start ollama                       # Super lives here
+curl -s http://127.0.0.1:11434/api/generate \
+  -d '{"model":"nemotron-3-super:latest","prompt":"PONG","stream":false}' >/dev/null  # warm
+# note for the Spark: WORKSTATION_IP (LAN now, tailnet IP at venue), port 11435,
+# and the bearer token:
+cat ~/.nemoclaw/ollama-proxy-token                # treat as a secret
+curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
+  http://$WORKSTATION_IP:11435/v1/models          # → lists nemotron-3-super:latest
 ```
-(Tailscale ACLs should restrict :11434 to just the Spark node — set this in the
-Tailscale admin console for least privilege.)
+> Tokenless alternative: bind Ollama itself to the network
+> (`sudo systemctl edit ollama` → `OLLAMA_HOST=0.0.0.0:11434` → restart) and use
+> bare `http://$WORKSTATION_IP:11434/v1`. Simpler config, but the raw model port
+> is open — use only on a trusted tailnet/LAN, and ideally restrict with
+> Tailscale ACLs (or `ufw`) to just the Spark node.
 
 ### 3. Spark — point NemoClaw inference at the workstation
 The sandbox's OpenClaw config routes inference via `inference.local`. Repoint
-the provider base URL at the workstation's tailnet Ollama:
+the provider base URL (and API key) at the workstation's token-gated proxy:
 ```bash
-SBX=$(docker ps --filter name=openshell-hack-agent --format '{{.Names}}' | head -1)
+SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
 docker exec --user sandbox -e HOME=/home/sandbox \
-  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json \
-  "$SBX" openclaw config set \
-  models.providers.inference.baseUrl "http://$WORKSTATION_TS_IP:11434/v1"
+  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
+  openclaw config set models.providers.inference.baseUrl "http://$WORKSTATION_IP:11435/v1"
+docker exec --user sandbox -e HOME=/home/sandbox \
+  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
+  openclaw config set models.providers.inference.apiKey "<workstation proxy token>"
 # bounce openclaw to apply
 docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'
 ```
+`$WORKSTATION_IP` = the workstation's LAN IP for a home rehearsal (e.g.
+`192.168.0.2`), or its `100.x` tailnet IP at the venue — nothing else changes.
 > NOTE: depending on the OpenShell network policy, the sandbox may block egress
-> to the tailnet IP. If so, add the workstation tailnet IP:11434 to an allow
-> rule in the sandbox network policy (this is the step that "opens the box" —
-> see threat model above), then re-onboard / restart the sandbox.
+> to the workstation IP. If so, add `WORKSTATION_IP:11435` to an allow rule in
+> the sandbox network policy (this is the step that "opens the box" — see threat
+> model above), then re-onboard / restart the sandbox.
 
 ### 4. Spark — local Nano fallback
 Load Nano locally so a network drop has an instant switch-to-local path:
