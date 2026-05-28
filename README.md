@@ -111,9 +111,9 @@ raw model port is then open on the LAN.)
 
 ### Machine B — sandbox + agent + lobster (from a blank Ubuntu 24.04 box)
 
-Run each phase as one paste. There is exactly **one unavoidable manual break**
-(log out / back in after you're added to the `docker` group) and **one
-interactive step** (the NemoClaw onboarding wizard). Work under `$HOME` on an
+Run each phase as one paste. The only interactive step is the NemoClaw
+onboarding wizard; the `docker`-group activation uses `newgrp` so **no logout is
+needed** — just stay in that one terminal for B1 and B2. Work under `$HOME` on an
 **ext4** disk — NOT an NTFS / exFAT / network mount, or `git` and `venv` die on
 `chmod` ("Operation not permitted").
 
@@ -133,11 +133,16 @@ curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-contai
 sudo apt update && sudo apt install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
 ```
-**↳ Now log out and back in (or reboot)**, then confirm the group is live —
-this is the `permission denied … docker.sock` gate:
+**↳ Activate the group without logging out:** run `newgrp docker` and **stay in
+this terminal for B1 + B2** — it execs a fresh shell that has the group, and the
+lines you paste after it run inside that shell. (A *separate* terminal needs its
+own `newgrp docker`; or log out/in once and forget it.)
 ```bash
+newgrp docker
 docker ps        # must run with NO permission error before continuing
 ```
+> `newgrp` starts a new shell, so set variables (like B2's `MACHINE_A_IP`)
+> **after** it — B2 already does.
 
 **B1 — install NemoClaw + onboard (interactive):**
 ```bash
