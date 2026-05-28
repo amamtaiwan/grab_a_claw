@@ -193,6 +193,15 @@ cfg 'models.providers.inference.models[0].id'   "nemotron-3-super:latest"
 cfg 'models.providers.inference.models[0].name' "inference/nemotron-3-super:latest"
 cfg agents.defaults.model.primary               "inference/nemotron-3-super:latest"
 cfg tools.toolSearch false
+
+# Open the sandbox's egress to Machine A. A fresh sandbox enforces an egress
+# allowlist (via an internal proxy): the agent may reach inference.local /
+# host.openshell.internal and the package registries, but NOT A's IP — so
+# without this it silently falls back to LOCAL inference and A's GPU never moves.
+# This is the "open the box" step (docs/DEMO_ARCH1.md). The preset hardcodes
+# 192.168.0.2 — edit policies/remote-inference.yaml if A's IP differs.
+nemoclaw hack-agent policy-add --from-file ./policies/remote-inference.yaml --yes
+
 docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # reload agent config
 
 # sanity: does Machine A serve Super over the network? (should list nemotron-3-super)

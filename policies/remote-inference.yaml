@@ -1,0 +1,32 @@
+# grab_a_claw — DEMO-ONLY egress allow for split-inference (Arch 1).
+#
+# Opens the sandbox's egress to Machine A's Ollama auth-proxy so the agent can
+# reach remote Super. This is the "open the box" step in docs/DEMO_ARCH1.md —
+# it relaxes the network-isolation guarantee. Edit the host IP to match your
+# Machine A (LAN IP at home; same IP over the OpenVPN tunnel at the venue).
+#
+# Apply:  nemoclaw hack-agent policy-add --from-file ./policies/remote-inference.yaml --yes
+# Remove: nemoclaw hack-agent policy-remove remote-inference --yes
+preset:
+  name: remote-inference
+  description: "DEMO-ONLY: egress to Machine A Ollama proxy for remote Super"
+
+network_policies:
+  remote_inference:
+    name: remote_inference
+    endpoints:
+      - host: 192.168.0.2
+        port: 11435
+        protocol: rest
+        enforcement: enforce
+        allowed_ips:
+          - 192.168.0.0/16
+        rules:
+          - allow: { method: GET, path: "/**" }
+          - allow: { method: POST, path: "/**" }
+    binaries:
+      - { path: /usr/local/bin/openclaw }
+      - { path: /usr/local/bin/node }
+      - { path: /usr/bin/node }
+      - { path: /usr/bin/curl }
+      - { path: /usr/bin/python3 }

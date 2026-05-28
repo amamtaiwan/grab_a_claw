@@ -108,10 +108,19 @@ docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'
 `$WORKSTATION_IP` = the workstation's LAN IP `192.168.0.2` — the same at home
 and over the venue OpenVPN tunnel (the router routes VPN clients into the LAN),
 so nothing in this step changes between rehearsal and the booth.
-> NOTE: depending on the OpenShell network policy, the sandbox may block egress
-> to the workstation IP. If so, add `WORKSTATION_IP:11435` to an allow rule in
-> the sandbox network policy (this is the step that "opens the box" — see threat
-> model above), then re-onboard / restart the sandbox.
+> NOTE — **required on a fresh sandbox.** A newly-onboarded sandbox enforces an
+> egress allowlist (internal proxy): the agent can reach `inference.local` /
+> `host.openshell.internal` + package registries, but **not** the workstation's
+> IP — so it silently falls back to LOCAL inference and the workstation GPU never
+> moves. Open egress to it (this is the step that "opens the box" — see threat
+> model above):
+> ```bash
+> # policies/remote-inference.yaml allows host 192.168.0.2:11435 — edit if needed
+> nemoclaw hack-agent policy-add --from-file ./policies/remote-inference.yaml --yes
+> ```
+> Verify the agent (not just the host) can now reach it — `docker exec` bypasses
+> the proxy, so test from the agent's environment or just watch the workstation
+> GPU load Super on the first dashboard turn.
 
 ### 4. Spark — local Nano fallback
 Load Nano locally so a network drop has an instant switch-to-local path:
