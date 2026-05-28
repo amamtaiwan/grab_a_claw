@@ -8,9 +8,9 @@
 
 ```
 [ HOME — your workstation ]                 [ BOOTH — DGX Spark ]
-  Ollama + Nemotron 3 Super 120B    ← Tailscale →   NemoClaw sandbox
+  Ollama + Nemotron 3 Super 120B    ←  OpenVPN  →   NemoClaw sandbox
   (96 GB Blackwell, ~1.79 TB/s)       (text only)    + OpenClaw agent
-  serves /v1 on tailnet IP                            + ui/overlay.py (lobster)
+  proxy /v1 on LAN/VPN IP :11435                      + ui/overlay.py (lobster)
                                                       + drives the booth 4K display
                                                       + Nano 30B loaded LOCAL as fallback
 ```
@@ -29,16 +29,17 @@ the Spark**, so a flaky conference network never touches the visuals.
    (the gateway's internal virtual host). On `main`, the agent literally
    cannot reach the open internet.
 
-This branch **repoints the sandbox's inference provider at a remote Tailscale
-IP**. That means:
+This branch **repoints the sandbox's inference provider at a remote IP reached
+over an OpenVPN tunnel**. That means:
 
 - The sandbox now has a live network path off-box (to the workstation). A
   compromised or jailbroken agent could, in principle, use that channel for
   exfiltration or C2 — the network-isolation guarantee no longer holds.
-- The inference traffic rides Tailscale (WireGuard, encrypted) but the
-  *policy* that used to forbid all non-`inference.local` egress is relaxed.
-- We accept this **only** because the demo runs on a controlled tailnet with
-  exactly two known nodes, for ~20 minutes, with an operator watching.
+- The inference traffic rides an OpenVPN tunnel (encrypted; only the router's
+  cert-authenticated VPN port faces the internet, never the `:11435` proxy) but
+  the *policy* that used to forbid all non-`inference.local` egress is relaxed.
+- We accept this **only** because the demo runs over a controlled OpenVPN tunnel
+  with exactly two known nodes, for ~20 minutes, with an operator watching.
 
 For any real deployment, inference must stay local (as on `main`) or be
 fronted by a policy-enforced proxy that still satisfies `openshell policy prove`.
@@ -46,20 +47,26 @@ fronted by a policy-enforced proxy that still satisfies `openshell policy prove`
 ## Setup (rehearse this BEFORE the event)
 
 ### 0. Prereqs
-- Tailscale account; both machines joined to the same tailnet.
+- OpenVPN: the **home router** runs the built-in OpenVPN **server**; the Spark
+  runs the OpenVPN **client** with a `.ovpn` profile exported from the router.
 - Workstation: Ollama + Super already working (this is `main`'s normal state).
 - Spark: NemoClaw + OpenShell + OpenClaw installed; overlay deps installed.
 
-### 1. Tailscale — join both nodes
+### 1. OpenVPN — router server, Spark client
+On the **home router**: enable the built-in OpenVPN server, allow VPN clients to
+reach the LAN subnet (`192.168.0.0/24`, not internet-only), and export the
+client `.ovpn`. The router opens its own VPN port — you do **not** port-forward
+`:11435`. On the **Spark**:
 ```bash
-# both machines
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-tailscale ip -4          # note each node's 100.x.y.z address
+sudo apt install -y openvpn
+sudo openvpn --config client.ovpn --daemon      # or import into NetworkManager
 ```
-Record:
-- `WORKSTATION_TS_IP` = `100.__.__.__`
-- `SPARK_TS_IP`       = `100.__.__.__`
+Because the router routes VPN clients into the LAN, the Spark reaches the
+workstation at its **LAN IP** — so `WORKSTATION_IP = 192.168.0.2` both at home
+and over the venue tunnel. Verify with the proxy token:
+```bash
+curl -s -H "Authorization: Bearer <token>" http://192.168.0.2:11435/v1/models   # → lists Super
+```
 
 ### 2. Workstation — serve the model on the network
 NemoClaw already runs an **auth-proxy** that exposes an OpenAI-compatible `/v1`
@@ -71,8 +78,8 @@ proxy is already network-facing, so you usually only need to bring Ollama up:
 sudo systemctl start ollama                       # Super lives here
 curl -s http://127.0.0.1:11434/api/generate \
   -d '{"model":"nemotron-3-super:latest","prompt":"PONG","stream":false}' >/dev/null  # warm
-# note for the Spark: WORKSTATION_IP (LAN now, tailnet IP at venue), port 11435,
-# and the bearer token:
+# note for the Spark: WORKSTATION_IP=192.168.0.2 (LAN, and the same over the
+# venue OpenVPN tunnel), port 11435, and the bearer token:
 cat ~/.nemoclaw/ollama-proxy-token                # treat as a secret
 curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
   http://$WORKSTATION_IP:11435/v1/models          # → lists nemotron-3-super:latest
@@ -80,8 +87,9 @@ curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
 > Tokenless alternative: bind Ollama itself to the network
 > (`sudo systemctl edit ollama` → `OLLAMA_HOST=0.0.0.0:11434` → restart) and use
 > bare `http://$WORKSTATION_IP:11434/v1`. Simpler config, but the raw model port
-> is open — use only on a trusted tailnet/LAN, and ideally restrict with
-> Tailscale ACLs (or `ufw`) to just the Spark node.
+> is open on the LAN/VPN subnet — keep it off the public internet (the OpenVPN
+> tunnel already does that), and ideally restrict it with `ufw` to just the VPN
+> subnet / Spark.
 
 ### 3. Spark — point NemoClaw inference at the workstation
 The sandbox's OpenClaw config routes inference via `inference.local`. Repoint
@@ -97,8 +105,9 @@ docker exec --user sandbox -e HOME=/home/sandbox \
 # bounce openclaw to apply
 docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'
 ```
-`$WORKSTATION_IP` = the workstation's LAN IP for a home rehearsal (e.g.
-`192.168.0.2`), or its `100.x` tailnet IP at the venue — nothing else changes.
+`$WORKSTATION_IP` = the workstation's LAN IP `192.168.0.2` — the same at home
+and over the venue OpenVPN tunnel (the router routes VPN clients into the LAN),
+so nothing in this step changes between rehearsal and the booth.
 > NOTE: depending on the OpenShell network policy, the sandbox may block egress
 > to the workstation IP. If so, add `WORKSTATION_IP:11435` to an allow rule in
 > the sandbox network policy (this is the step that "opens the box" — see threat
@@ -158,15 +167,17 @@ no config flag needed:
 
 ## Demo-day runbook
 
-1. Workstation at home: Ollama up, Super warm, Tailscale up, `OLLAMA_HOST` on tailnet.
-2. Spark at booth: Tailscale up, `curl $WORKSTATION_TS_IP:11434/api/tags` returns 200.
+1. Workstation at home: Ollama up, Super warm; router's OpenVPN server enabled.
+2. Spark at booth: OpenVPN client connected; `curl -H "Authorization: Bearer <token>" http://192.168.0.2:11435/v1/models` lists Super.
 3. Spark: `./scripts/pre-demo.sh hack-agent` (seeds demo desktop, revokes gate).
 4. Spark: launch overlay in a shell **with docker group active** (`newgrp docker` first).
 5. Dashboard: run A → B1 → B2(locked→unlock)→ B3.
-6. If a turn hangs > 60 s: check the tunnel (`tailscale status`); if the
-   workstation is unreachable, do step 4 of "Spark — local Nano fallback".
+6. If a turn hangs > 60 s: check the tunnel (`ping 192.168.0.2`, OpenVPN client
+   status); if the workstation is unreachable, do step 4 of "Spark — local Nano
+   fallback".
 7. Ultimate fallback: play the recorded demo videos (embedded in `main`'s README).
 
 ## Teardown
-- Revert Spark inference route to local; `tailscale down` on both; restore
-  workstation Ollama to `127.0.0.1` bind. This branch never merges to `main`.
+- Revert Spark inference route to local; stop the OpenVPN client on the Spark and
+  disable the router's OpenVPN server; optionally rotate the workstation proxy
+  token. This branch never merges to `main`.

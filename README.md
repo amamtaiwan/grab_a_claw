@@ -1,6 +1,6 @@
 > # ⚠️ DEMO-ONLY BRANCH — PROBABLY UNSAFE ⚠️
 > **`demo-arch1-remote-inference`** splits the stack so the model runs on a
-> remote workstation (over a Tailscale tunnel) while the sandbox + agent +
+> remote workstation (over an OpenVPN tunnel) while the sandbox + agent +
 > overlay run on the booth DGX Spark. **This intentionally breaks the network
 > isolation guarantee** that `main` relies on: the sandbox's inference egress
 > is pointed at a remote endpoint instead of being locked to `inference.local`.
@@ -95,7 +95,7 @@ curl -s http://127.0.0.1:11434/api/generate \
 
 # A3. NemoClaw's auth-proxy already serves an OpenAI-compatible /v1 on
 #     0.0.0.0:11435 (token-gated). Note these three for Machine B:
-hostname -I | awk '{print $1}'        # MACHINE_A_IP  (LAN now; tailnet IP at the venue)
+hostname -I | awk '{print $1}'        # MACHINE_A_IP = 192.168.0.2 (LAN, and the same over the venue OpenVPN)
 echo 11435                            # proxy port
 cat ~/.nemoclaw/ollama-proxy-token    # bearer token  (treat as a secret — do not commit/share)
 
@@ -169,7 +169,7 @@ docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names
 **B2 — point inference at Machine A, get the repo, run (single paste):**
 ```bash
 # >>> EDIT THESE TWO LINES <<<
-MACHINE_A_IP=192.168.0.2                      # A's LAN IP now; A's 100.x tailnet IP at the venue
+MACHINE_A_IP=192.168.0.2                      # A's LAN IP — same at home and over the venue OpenVPN tunnel
 A_TOKEN='paste-machine-A-proxy-token-here'    # = `cat ~/.nemoclaw/ollama-proxy-token` on Machine A
 
 cd ~ && git clone https://github.com/amamtaiwan/grab_a_claw.git
@@ -195,13 +195,46 @@ curl -s -H "Authorization: Bearer $A_TOKEN" "http://$MACHINE_A_IP:11435/v1/model
 ui/.venv/bin/python -u ui/overlay.py       # lobster overlay; 4K auto-detects SCALE=2.0
 ```
 
-**Network:** for the home rehearsal set `MACHINE_A_IP` to Machine A's LAN address
-(e.g. `192.168.0.2`). At the venue, `tailscale up` on both boxes and set
-`MACHINE_A_IP` to Machine A's `100.x` tailnet IP — nothing else changes.
+### Network — home rehearsal vs venue (OpenVPN)
 
-**Verify the link from Machine B:** the A4 `curl` (run from B against
-`MACHINE_A_IP:11435`) lists Super; then a dashboard B1 prompt moves the lobster —
-proving B's agent reached A's Super over the network.
+The plain HTTP `:11435` proxy is **never exposed to the public internet**. The
+two boxes share a private subnet — your LAN at home, an OpenVPN tunnel at the
+venue — and `MACHINE_A_IP` is just Machine A's address on that subnet.
+
+- **Home rehearsal (same LAN):** `MACHINE_A_IP=192.168.0.2` (A's LAN IP). No VPN.
+- **At the venue (OpenVPN, server on your home router):** the router runs an
+  OpenVPN server and routes VPN clients into the home LAN, so once Machine B is
+  connected it reaches Machine A at the **same** `192.168.0.2:11435` — **B2 does
+  not change**; B only has to bring the tunnel up first. Only the router's
+  cert-authenticated OpenVPN port faces the internet; the token rides *inside*
+  the encrypted tunnel.
+
+**On your home router (one-time):** enable the built-in OpenVPN **server**, make
+sure its clients are **allowed to reach the LAN subnet** (`192.168.0.0/24` — not
+"internet-only"), and **export the client `.ovpn` profile**. Exact menu names
+vary by router (ASUSWRT / pfSense / OPNsense / OpenWRT / UniFi). The router opens
+its own VPN port; you do **not** port-forward `11435`.
+
+**Send the organizers three things** (the `.ovpn` carries the certs/keys — treat
+it like a credential):
+1. the client **`.ovpn`** profile,
+2. the proxy **token** — `cat ~/.nemoclaw/ollama-proxy-token` on Machine A,
+3. `MACHINE_A_IP=192.168.0.2` and `model id = nemotron-3-super:latest`.
+
+**Machine B at the venue — connect the VPN before B2:**
+```bash
+sudo apt install -y openvpn
+sudo openvpn --config client.ovpn --daemon       # or import client.ovpn into NetworkManager
+# confirm the tunnel reaches Machine A's proxy (use the token they sent):
+curl -s -H "Authorization: Bearer <token>" http://192.168.0.2:11435/v1/models   # → lists nemotron-3-super
+```
+Then run **B2** exactly as written (`MACHINE_A_IP=192.168.0.2`).
+
+**Verify end to end:** the curl above lists Super; then a dashboard B1 prompt
+moves the lobster — proving B's agent reached A's Super through the tunnel.
+
+> After the demo: stop the OpenVPN client on B, disable the router's VPN server,
+> and (optional, belt-and-braces) rotate the proxy token on A.
 
 ## Setup (single-machine reference)
 
