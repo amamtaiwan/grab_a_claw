@@ -101,7 +101,7 @@ cat ~/.nemoclaw/ollama-proxy-token    # bearer token  (treat as a secret — do 
 
 # A4. Confirm the LAN endpoint actually serves Super:
 curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
-  http://MACHINE_A_IP:11435/v1/models      # → should list nemotron-3-super:latest
+  "http://$(hostname -I | awk '{print $1}'):11435/v1/models"   # → should list nemotron-3-super:latest
 ```
 
 (If you'd rather not deal with a token, bind Ollama to the LAN instead —
@@ -109,48 +109,79 @@ curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
 Machine B use `http://MACHINE_A_IP:11434/v1` with any `apiKey`. Simpler, but the
 raw model port is then open on the LAN.)
 
-### Machine B — sandbox + agent + lobster
+### Machine B — sandbox + agent + lobster (from a blank Ubuntu 24.04 box)
 
+Run each phase as one paste. There is exactly **one unavoidable manual break**
+(log out / back in after you're added to the `docker` group) and **one
+interactive step** (the NemoClaw onboarding wizard). Work under `$HOME` on an
+**ext4** disk — NOT an NTFS / exFAT / network mount, or `git` and `venv` die on
+`chmod` ("Operation not permitted").
+
+**B0 — base system (sudo), then LOG OUT and back in:**
 ```bash
-# B1. Prereqs: Docker + NVIDIA driver ≥ 575. Work on a normal POSIX path under
-#     $HOME — NOT an NTFS / foreign-owned / network mount, or git and venv fail
-#     on chmod ("Operation not permitted"). Fetch + run the NemoClaw installer,
-#     pinned to the audited commit (not the floating `latest`):
+sudo apt update
+sudo apt install -y docker.io git curl python3-venv python3-pip
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"                  # takes effect on next login
+# NVIDIA: make sure the driver is installed first (`nvidia-smi` must work),
+# then the container toolkit so the sandbox can claim the GPU:
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt update && sudo apt install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+```
+**↳ Now log out and back in (or reboot)**, then confirm the group is live —
+this is the `permission denied … docker.sock` gate:
+```bash
+docker ps        # must run with NO permission error before continuing
+```
+
+**B1 — install NemoClaw + onboard (interactive):**
+```bash
 cd ~
 curl -fsSL https://www.nvidia.com/nemoclaw.sh -o nemoclaw-install.sh
 NEMOCLAW_INSTALL_REF=0f48781072b61041b0a53d57ad1845e85e7c634a \
 NEMOCLAW_SANDBOX_NAME=hack-agent NEMOCLAW_PROVIDER=ollama \
 NEMOCLAW_POLICY_MODE=suggested bash nemoclaw-install.sh
-#     The installer is interactive (sudo for Docker/nvidia-ctk/`docker` group).
-#     During onboarding pick the SMALLEST model — Machine B does not serve Super,
-#     it only needs a sandbox (Nano doubles as the network-drop fallback; see
-#     docs/DEMO_ARCH1.md). After it finishes, activate the group: `newgrp docker`
-#     (or re-login), then confirm the sandbox is up before B2:
-#       nemoclaw list
-#       docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}'
+```
+The wizard asks you to accept third-party terms and **pick a model — choose the
+SMALLEST** (Machine B does not serve Super; it only needs a sandbox. Nano
+doubles as the network-drop fallback — see docs/DEMO_ARCH1.md). The installer
+appends `~/.local/bin` to PATH, so open a new shell (or `source ~/.bashrc`),
+then confirm the sandbox is up:
+```bash
+nemoclaw list
+docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}'
+```
 
-# B2. Point the sandbox's inference at Machine A (the one real change vs main):
-SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
-docker exec --user sandbox -e HOME=/home/sandbox \
-  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
-  openclaw config set models.providers.inference.baseUrl "http://MACHINE_A_IP:11435/v1"
-docker exec --user sandbox -e HOME=/home/sandbox \
-  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
-  openclaw config set models.providers.inference.apiKey "<Machine A's proxy token>"
+**B2 — point inference at Machine A, get the repo, run (single paste):**
+```bash
+# >>> EDIT THESE TWO LINES <<<
+MACHINE_A_IP=192.168.0.2                      # A's LAN IP now; A's 100.x tailnet IP at the venue
+A_TOKEN='paste-machine-A-proxy-token-here'    # = `cat ~/.nemoclaw/ollama-proxy-token` on Machine A
 
-# B3. Clone this branch, build the overlay env, install skills, disable toolSearch:
-git clone https://github.com/amamtaiwan/grab_a_claw.git
+cd ~ && git clone https://github.com/amamtaiwan/grab_a_claw.git
 cd grab_a_claw && git checkout demo-arch1-remote-inference
 python3 -m venv ui/.venv && ui/.venv/bin/pip install -r ui/requirements.txt
 nemoclaw hack-agent skill install ./skills/desktop-tidy
 nemoclaw hack-agent skill install ./skills/desktop-arrange
-docker exec --user sandbox -e HOME=/home/sandbox \
-  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
-  openclaw config set tools.toolSearch false
+
+# Repoint the sandbox's inference at Machine A (the one real change vs main):
+SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
+cfg(){ docker exec --user sandbox -e HOME=/home/sandbox \
+  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" openclaw config set "$@"; }
+cfg models.providers.inference.baseUrl "http://$MACHINE_A_IP:11435/v1"
+cfg models.providers.inference.apiKey  "$A_TOKEN"
+cfg tools.toolSearch false
 docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # apply config
 
-# B4. Run the demo (Machine B's display is the booth screen):
-./scripts/pre-demo.sh hack-agent          # seeds desktop, closes the gate, prints dashboard URL
+# sanity: does Machine A serve Super over the network? (should list nemotron-3-super)
+curl -s -H "Authorization: Bearer $A_TOKEN" "http://$MACHINE_A_IP:11435/v1/models"
+
+./scripts/pre-demo.sh hack-agent           # seeds desktop, closes the gate, prints dashboard URL
 ui/.venv/bin/python -u ui/overlay.py       # lobster overlay; 4K auto-detects SCALE=2.0
 ```
 
