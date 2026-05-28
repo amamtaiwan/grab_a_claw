@@ -182,8 +182,9 @@ nemoclaw hack-agent skill install ./skills/desktop-arrange
 SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
 cfg(){ docker exec --user sandbox -e HOME=/home/sandbox \
   -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" openclaw config set "$@"; }
-cfg models.providers.inference.baseUrl "http://$MACHINE_A_IP:11435/v1"
-cfg models.providers.inference.apiKey  "$A_TOKEN"
+cfg models.providers.inference.baseUrl    "http://$MACHINE_A_IP:11435/v1"
+cfg models.providers.inference.apiKey     "$A_TOKEN"
+cfg 'models.providers.inference.models[0].id' "nemotron-3-super:latest"  # use A's Super, not the small model you onboarded with
 cfg tools.toolSearch false
 docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # apply config
 
