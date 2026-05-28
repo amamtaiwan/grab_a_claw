@@ -192,6 +192,36 @@ This runs the exact same Bash logic the agent would have run through `desktop-ti
 
 `post-demo.sh` removes the demo files from `~/Desktop` and any host destination folders, then restores your original desktop files from `~/.grab_a_claw-stash/<timestamp>/`. Safe to re-run.
 
+### Clearing GPU VRAM before / between demos
+
+The demo path uses **only Ollama** (Nemotron 3 Super, ~90 GB resident). You normally never touch VRAM — `OLLAMA_KEEP_ALIVE` keeps the model hot. But if you've been experimenting (e.g. the fine-tune track's vLLM server) or the GPU looks full when it shouldn't, clear it like this:
+
+```bash
+# 1. See exactly what's holding VRAM.
+nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv
+
+# 2. Unload just the Ollama model (keeps the daemon; fastest path).
+ollama stop nemotron-3-super:latest
+
+# 3. Or fully restart Ollama (drops everything it holds).
+sudo systemctl restart ollama
+
+# 4. Kill an orphaned engine that survived a Ctrl+C (the classic culprit
+#    is a vLLM "EngineCore" process from the fine-tune track — it can hold
+#    ~90 GB and won't die with the parent). Find its pid in step 1, then:
+kill -9 <pid>
+
+# 5. Confirm the card is clear (should drop to a few hundred MiB).
+nvidia-smi --query-gpu=index,memory.used --format=csv
+
+# 6. Re-warm Super before the demo so the first dashboard turn is instant.
+curl -s http://localhost:11434/api/generate \
+  -d '{"model":"nemotron-3-super:latest","prompt":"PONG","stream":false}' >/dev/null
+nvidia-smi --query-gpu=memory.used --format=csv   # ~90 GB once loaded
+```
+
+`pre-demo.sh` already re-warms the model in its last step, so for a normal reset you only need this if a stale process is squatting on the card.
+
 ## Repo layout
 
 ```
