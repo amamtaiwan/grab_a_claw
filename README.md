@@ -111,18 +111,21 @@ raw model port is then open on the LAN.)
 
 ### Machine B — sandbox + agent + lobster (from a blank Ubuntu 24.04 box)
 
-Run each phase as one paste. The only interactive step is the NemoClaw
-onboarding wizard; the `docker`-group activation uses `newgrp` so **no logout is
-needed** — just stay in that one terminal for B1 and B2. Work under `$HOME` on an
-**ext4** disk — NOT an NTFS / exFAT / network mount, or `git` and `venv` die on
-`chmod` ("Operation not permitted").
+**Open one terminal on Machine B and run B0 → B2 in it yourself.** These are
+hands-on steps — a `sudo` password prompt, the `newgrp docker` shell, and the
+NemoClaw onboarding wizard — so type/paste them in your own terminal, not through
+any automation that can't answer prompts. **Stay in that same terminal the whole
+way:** `newgrp docker` (end of B0) activates the docker group for *that shell
+only*, so opening a second terminal would lose it (you'd just `newgrp docker`
+again there). Work under `$HOME` on an **ext4** disk — NOT an NTFS / exFAT /
+network mount, or `git` and `venv` die on `chmod` ("Operation not permitted").
 
-**B0 — base system (sudo), then LOG OUT and back in:**
+**B0 — base packages + docker group (in your terminal; `sudo` will prompt):**
 ```bash
 sudo apt update
 sudo apt install -y docker.io git curl python3-venv python3-pip
 sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"                  # takes effect on next login
+sudo usermod -aG docker "$USER"                  # activated by `newgrp docker` below (no relogin)
 # NVIDIA: make sure the driver is installed first (`nvidia-smi` must work),
 # then the container toolkit so the sandbox can claim the GPU:
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
@@ -155,8 +158,9 @@ NEMOCLAW_POLICY_MODE=suggested bash nemoclaw-install.sh
 The wizard asks you to accept third-party terms and **pick a model — choose the
 SMALLEST** (Machine B does not serve Super; it only needs a sandbox. Nano
 doubles as the network-drop fallback — see docs/DEMO_ARCH1.md). The installer
-appends `~/.local/bin` to PATH, so open a new shell (or `source ~/.bashrc`),
-then confirm the sandbox is up:
+appends `~/.local/bin` to PATH; reload it **in this same shell** with
+`source ~/.bashrc` (do NOT open a new terminal — that would drop the `newgrp`
+docker group), then confirm the sandbox is up:
 ```bash
 nemoclaw list
 docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}'
