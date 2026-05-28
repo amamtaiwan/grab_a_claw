@@ -184,9 +184,16 @@ cfg(){ docker exec --user sandbox -e HOME=/home/sandbox \
   -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" openclaw config set "$@"; }
 cfg models.providers.inference.baseUrl    "http://$MACHINE_A_IP:11435/v1"
 cfg models.providers.inference.apiKey     "$A_TOKEN"
-cfg 'models.providers.inference.models[0].id' "nemotron-3-super:latest"  # use A's Super, not the small model you onboarded with
+# Onboarding registered the small model you picked; retarget ALL of these at
+# Super (id = upstream model param sent to A; name = openclaw's id for it;
+# primary = the model the agent actually selects). Setting only `id` leaves the
+# agent pointing at the small model — and since A also has it pulled, you'd
+# silently run the small model on A instead of Super.
+cfg 'models.providers.inference.models[0].id'   "nemotron-3-super:latest"
+cfg 'models.providers.inference.models[0].name' "inference/nemotron-3-super:latest"
+cfg agents.defaults.model.primary               "inference/nemotron-3-super:latest"
 cfg tools.toolSearch false
-docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # apply config
+docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # reload agent config
 
 # sanity: does Machine A serve Super over the network? (should list nemotron-3-super)
 curl -s -H "Authorization: Bearer $A_TOKEN" "http://$MACHINE_A_IP:11435/v1/models"
