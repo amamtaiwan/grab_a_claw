@@ -523,12 +523,18 @@ class DesktopArrangeBroker(threading.Thread):
     POLL_INTERVAL_S = 1.0
     GATE_FILE = Path("/tmp/grab_a_claw-gate-state")
 
-    def __init__(self, container_resolver, event_queue: "queue.Queue"):
+    def __init__(self, container_resolver, event_queue: "queue.Queue",
+                 scale: float = 1.0):
         super().__init__(name="DesktopArrangeBroker", daemon=True)
         self._stop = threading.Event()
         self._resolver = container_resolver
         self._queue = event_queue
         self._processed_lines = 0
+        # SKILL.md / the agent emit coords in logical 1920x1080 space.
+        # On a 4K booth display the overlay passes scale=2.0 so every
+        # emitted x/y (and gio set metadata downstream) lands at the same
+        # relative spot. On 1080, scale=1.0 → identical behaviour.
+        self._scale = scale
 
     def run(self) -> None:
         # On startup, fast-forward past any backlog left over from a
@@ -644,8 +650,8 @@ class DesktopArrangeBroker(threading.Thread):
         print(f"[broker] meta-arrange: {len(files)} file(s) sort={sort} col_x={col_x} "
               f"pitch={pitch} start_y={start_y}")
         for i, fname in enumerate(files):
-            x = int(col_x)
-            y = int(start_y) + i * int(pitch)
+            x = int(int(col_x) * self._scale)
+            y = int((int(start_y) + i * int(pitch)) * self._scale)
             self._queue.put(("arrange_request", fname, x, y))
             print(f"[broker]   → arrange_request {fname} → ({x},{y})")
 
@@ -654,12 +660,13 @@ class DesktopArrangeBroker(threading.Thread):
         x = intent.get("x")
         y = intent.get("y")
         if x is not None and y is not None:
-            return int(x), int(y)
+            return int(int(x) * self._scale), int(int(y) * self._scale)
         pos = intent.get("position") or intent.get("zone") or intent.get("area")
         if isinstance(pos, str):
             key = pos.strip().lower().replace(" ", "-")
             if key in self.ZONE_CENTERS:
-                return self.ZONE_CENTERS[key]
+                zx, zy = self.ZONE_CENTERS[key]
+                return int(zx * self._scale), int(zy * self._scale)
         return None
 
     @staticmethod
@@ -1128,6 +1135,7 @@ def main() -> int:
     # Probe real screen size and re-anchor the lobster's geography so
     # the demo scales to whatever the operator's monitor is.
     global STAGE_W, STAGE_H, HOME_POS, TRASH_ZONE_POS, GATE_X, GATE_Y, GATE_HEIGHT
+    global SPRITE_PX
     screen_w, screen_h = STAGE_W, STAGE_H
     try:
         _disp = pyglet.display.get_display()
@@ -1135,6 +1143,16 @@ def main() -> int:
         screen_w, screen_h = _scr.width, _scr.height
     except Exception:
         pass  # keep defaults
+
+    # 4K / HiDPI support. Every hardcoded layout constant in this file was
+    # authored in logical 1920x1080 space; SCALE maps it onto the real
+    # monitor. 1080 → 1.0 (byte-for-byte identical behaviour); a 3840-wide
+    # 4K display → 2.0. The GTC booth monitor is 4K. Fraction-based geometry
+    # (HOME/TRASH/STAGE below) already scales on its own; SCALE is for the
+    # absolute constants (sprite size, bin widget, folder coords, broker
+    # zone coords, fonts). Zero-risk fallback if 4K misbehaves on the day:
+    # force 1080 with `xrandr --output <DP-OUT> --mode 1920x1080`.
+    SCALE = screen_w / 1920.0
 
     # GNOME Ubuntu Dock auto-hides whenever ANY window touches its rect,
     # regardless of opacity. Reserving a margin so our overlay doesn't
@@ -1154,11 +1172,11 @@ def main() -> int:
     # (red=closed / yellow=pending / green=open) AND is the drop target.
     # The GATE_* names are reused so existing bounce/hitbox/SHAPE code
     # keeps working with the bin's geometry.
-    GATE_WIDTH = 80
-    GATE_HEIGHT = 100
+    GATE_WIDTH = int(80 * SCALE)
+    GATE_HEIGHT = int(100 * SCALE)
     GATE_X = TRASH_ZONE_POS[0] - GATE_WIDTH // 2
     GATE_Y = TRASH_ZONE_POS[1] - GATE_HEIGHT // 2
-    print(f"[overlay] screen {screen_w}x{screen_h}; reserved L{margin_left}/T{margin_top}/R{margin_right}/B{margin_bottom}")
+    print(f"[overlay] screen {screen_w}x{screen_h}; reserved L{margin_left}/T{margin_top}/R{margin_right}/B{margin_bottom}; SCALE={SCALE:.3f}")
     print(f"[overlay] stage    {STAGE_W}x{STAGE_H} at ({margin_left},{margin_top}); HOME={HOME_POS} TRASH_BIN=({GATE_X},{GATE_Y}) {GATE_WIDTH}x{GATE_HEIGHT}")
 
     window = make_window(origin_x=margin_left, origin_y=margin_top, width=STAGE_W, height=STAGE_H)
@@ -1189,7 +1207,10 @@ def main() -> int:
     sprite_img.anchor_x = sprite_img.width // 2
     sprite_img.anchor_y = sprite_img.height // 2
     sprite = pyglet.sprite.Sprite(img=sprite_img, x=HOME_POS[0], y=HOME_POS[1])
-    sprite.scale = SPRITE_SCALE
+    sprite.scale = SPRITE_SCALE * SCALE
+    # SPRITE_PX is read by the bounce/parking code at module scope; keep it
+    # in sync with the on-screen sprite so the lobster parks correctly on 4K.
+    SPRITE_PX = int(72 * SPRITE_SCALE * SCALE)
 
     lobster = Lobster(sprite=sprite, base_y=HOME_POS[1])
 
@@ -1214,7 +1235,7 @@ def main() -> int:
     claims: dict[str, float] = {}
     mirror_thread = SandboxMirror(_find_sandbox_container, mirror_queue, claims)
     mirror_thread.start()
-    arrange_broker = DesktopArrangeBroker(_find_sandbox_container, mirror_queue)
+    arrange_broker = DesktopArrangeBroker(_find_sandbox_container, mirror_queue, scale=SCALE)
     arrange_broker.start()
     desktop_watcher = DesktopWatcher(mirror_queue, claims)
     desktop_watcher.start()
@@ -1226,7 +1247,7 @@ def main() -> int:
     DROP_ZONES = {}
     for bucket, (sx, sy) in HOST_FOLDER_SCREEN_POS.items():
         DROP_ZONES[bucket] = screen_to_pyglet(
-            sx, sy, margin_left, margin_top, STAGE_H, screen_h,
+            int(sx * SCALE), int(sy * SCALE), margin_left, margin_top, STAGE_H, screen_h,
         )
     DROP_ZONES["trash"] = TRASH_ZONE_POS
 
@@ -1400,7 +1421,7 @@ def main() -> int:
     # icon ourselves instead of relying on 📄.
     carry_label = pyglet.text.Label(
         "",
-        font_name="Sans", font_size=11, color=(40, 30, 20, 230),
+        font_name="Sans", font_size=max(11, int(11 * SCALE)), color=(40, 30, 20, 230),
         x=0, y=0, anchor_x="center", anchor_y="bottom",
     )
     carry_bg = shapes.Rectangle(
@@ -1454,19 +1475,19 @@ def main() -> int:
     # green = closed/pending/open), and a tiny mirror-status hint.
     mirror_label = pyglet.text.Label(
         "mirror: idle",
-        font_name="Sans", font_size=11, color=(40, 40, 40, 230),
+        font_name="Sans", font_size=max(11, int(11 * SCALE)), color=(40, 40, 40, 230),
         x=GATE_X + GATE_WIDTH + 12, y=GATE_Y + GATE_HEIGHT + 6, anchor_x="left",
     )
     desktop_label = pyglet.text.Label(
         text=f"desktop: {len(available_files)} file(s)",
-        font_name="Sans", font_size=11, color=(80, 60, 40, 200),
+        font_name="Sans", font_size=max(11, int(11 * SCALE)), color=(80, 60, 40, 200),
         x=12, y=STAGE_H - 38,
     )
 
     def refresh_desktop_label() -> None:
         desktop_label.text = f"desktop: {len(available_files)} file(s)"
     gate_label = pyglet.text.Label(
-        "trash: LOCKED (click to unlock)", font_name="Sans", font_size=11,
+        "trash: LOCKED (click to unlock)", font_name="Sans", font_size=max(11, int(11 * SCALE)),
         color=(80, 60, 40, 220),
         x=GATE_X + GATE_WIDTH // 2, y=GATE_Y + GATE_HEIGHT + 10,
         anchor_x="center",

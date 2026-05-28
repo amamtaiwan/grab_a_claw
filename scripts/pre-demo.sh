@@ -84,8 +84,11 @@ SCREEN_H=$(xdpyinfo 2>/dev/null | awk '/dimensions:/{print $2}' | cut -dx -f2)
 [ -z "$SCREEN_H" ] && SCREEN_H=1080
 # Layout: a horizontal row of 7 icons near the top of the desktop, leaving
 # the lower 2/3 clear for the lobster to walk in.
-ICON_ROW_Y=180
-SIDE_MARGIN=180
+# Y and the side margin are authored in logical 1920x1080 space and scaled
+# to the real width so a 4K booth display (3840 wide → ×2) lines up with the
+# overlay, which applies the identical SCALE=SCREEN_W/1920 factor.
+ICON_ROW_Y=$(( 180 * SCREEN_W / 1920 ))
+SIDE_MARGIN=$(( 180 * SCREEN_W / 1920 ))
 USABLE_W=$((SCREEN_W - 2 * SIDE_MARGIN))
 N=${#DEMO_FILES[@]}
 SPACING=$((USABLE_W / (N - 1)))
@@ -128,23 +131,28 @@ hr "0d. create 5 sorted folders on ~/Desktop with explicit ding positions"
 # files AND the destination folders at once. Lobster walks file→folder
 # and the host mv moves the real file inside (visible by double-clicking
 # the folder).
-declare -A FOLDER_POS=(
+# Base coords are in logical 1920x1080 space and MUST match the overlay's
+# HOST_FOLDER_SCREEN_POS. Both sides scale by SCREEN_W/1920, so on a 4K booth
+# display (×2) the lobster's drop zone and the real folder icon stay aligned.
+declare -A FOLDER_BASE=(
   [Images]="200,420"
   [Documents]="550,420"
   [Archives]="900,420"
   [Code]="1250,420"
   [Media]="1600,420"
 )
-for folder in "${!FOLDER_POS[@]}"; do
+for folder in "${!FOLDER_BASE[@]}"; do
   path="$HOST_DESKTOP/$folder"
   # Wipe + recreate so positions get re-set fresh each run.
   rm -rf "$path" 2>/dev/null
   mkdir -p "$path"
-  pos="${FOLDER_POS[$folder]}"
+  base="${FOLDER_BASE[$folder]}"
+  bx=${base%,*}; by=${base#*,}
+  pos="$(( bx * SCREEN_W / 1920 )),$(( by * SCREEN_W / 1920 ))"
   gio set "$path" metadata::nautilus-icon-position "$pos" 2>/dev/null || true
   gio set "$path" metadata::desktopfile-icon-position "$pos" 2>/dev/null || true
 done
-ok "created Images/Documents/Archives/Code/Media folders at row y=420"
+ok "created Images/Documents/Archives/Code/Media folders (row scaled from y=420)"
 
 # Pre-create dest dirs we still mirror to (kept for legacy/audit; not
 # the demo's visible destinations any more).

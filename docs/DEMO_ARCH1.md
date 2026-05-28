@@ -123,10 +123,28 @@ docker exec --user sandbox -e HOME=/home/sandbox \
 Benchmark on the workstation first: a turn should drop well under 30 s.
 
 ### 6. 4K display
-The Spark drives the booth 4K monitor. Two options:
-- **Safe:** force 1080 so the existing coordinate constants line up:
+The Spark drives the booth 4K monitor. This branch supports it **natively** —
+no config flag needed:
+- `overlay.py` computes `SCALE = screen_w / 1920` at startup (logs it as
+  `SCALE=2.000` on a 3840-wide panel) and scales every absolute constant —
+  lobster sprite, trash-bin widget, sort-folder drop zones, the broker's
+  zone/explicit coords (and the `gio set` metadata it writes), and the status
+  fonts. Fraction-based geometry (home/trash/stage) already scaled on its own.
+- `pre-demo.sh` plants the host file/folder icons with the **same**
+  `SCREEN_W/1920` factor, so the real desktop icons and the lobster's drop
+  zones stay aligned. At 1920×1080 `SCALE=1.0` → byte-for-byte identical to
+  the tested `main` layout (zero regression); at 3840×2160 everything is ×2.
+- **Verify on the day:** start the overlay and confirm the log line reads
+  `screen 3840x2160 ... SCALE=2.000`. Run B1 (move draft.pdf upper-right) and
+  watch the lobster actually reach the folder icon — that proves the host and
+  overlay coords agree.
+- **Zero-risk fallback** if 4K misbehaves under pressure: force 1080 and the
+  whole stack runs at the well-tested `SCALE=1.0`:
   `xrandr --output <DP-OUT> --mode 1920x1080`
-- **Native 4K:** scale the demo coordinates ×2 (see the `4k-native` work if done).
+
+> ⚠️ The ×2 scaling assumes a 16:9 panel (3840×2160 is exactly 2× of
+> 1920×1080), so one uniform SCALE works for both axes. An ultrawide or a
+> non-16:9 projector would stretch — force 1080 in that case.
 
 ## Demo-day runbook
 
