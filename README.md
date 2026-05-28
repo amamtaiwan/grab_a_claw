@@ -93,15 +93,19 @@ sudo systemctl start ollama && systemctl is-active ollama
 curl -s http://127.0.0.1:11434/api/generate \
   -d '{"model":"nemotron-3-super:latest","prompt":"PONG","stream":false}' >/dev/null
 
-# A3. Add the organizer's PUBLIC key as a FORWARD-ONLY key. They generate the
-#     keypair on Machine B and send you only the public key — no private key is
-#     ever transmitted. This key can do exactly ONE thing: tunnel to the local
-#     Ollama. No shell, no other port, no LAN host. Revoke later by deleting it.
+# A3. Trust Machine B's forward-only key.
+#     ORDER: do Machine B step B2-i FIRST — it generates the key and prints a
+#     line starting `ssh-ed25519 …`. Paste THAT line in place of the
+#     <PASTE_MACHINE_B_PUBLIC_KEY> token below (no private key is ever sent).
+#     Machine B logs in as THIS account ($USER on A); the restrictions make the
+#     key forward-only: it can ONLY tunnel to the local Ollama — no shell, no
+#     other port, no LAN host. Revoke later by deleting this line.
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
-cat >> ~/.ssh/authorized_keys <<'KEY'
-no-pty,no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:11434",command="echo forward-only; sleep infinity" ssh-ed25519 AAAA...PASTE-ORGANIZER-PUBLIC-KEY... demo-forward
+cat >> ~/.ssh/authorized_keys <<KEY
+no-pty,no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:11434",command="echo forward-only; sleep infinity" <PASTE_MACHINE_B_PUBLIC_KEY>
 KEY
 chmod 600 ~/.ssh/authorized_keys
+grep -n PASTE_MACHINE_B ~/.ssh/authorized_keys && echo "!! you left the placeholder — edit that line to B's real ssh-ed25519 key"
 
 # A4. Make SSH reachable from the venue: keep key-only auth (no passwords), and
 #     port-forward ONE external port on your home router → this machine's :22.
@@ -114,7 +118,7 @@ hostname -I | awk '{print $1}'   # A's LAN IP (192.168.0.2) for the home rehears
 
 ### Machine B — sandbox + agent + lobster (from a blank Ubuntu 24.04 box)
 
-**Open one terminal on Machine B and run B0 → B2 in it yourself.** These are
+**Open one terminal on Machine B and run B0 → B3 in it yourself.** These are
 hands-on steps — a `sudo` password prompt, the `newgrp docker` shell, and the
 NemoClaw onboarding wizard — so type/paste them in your own terminal, not through
 any automation that can't answer prompts. **Stay in that same terminal the whole
@@ -140,15 +144,15 @@ sudo apt update && sudo apt install -y nvidia-container-toolkit
 sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
 ```
 **↳ Activate the group without logging out:** run `newgrp docker` and **stay in
-this terminal for B1 + B2** — it execs a fresh shell that has the group, and the
+this terminal for B1 – B3** — it execs a fresh shell that has the group, and the
 lines you paste after it run inside that shell. (A *separate* terminal needs its
 own `newgrp docker`; or log out/in once and forget it.)
 ```bash
 newgrp docker
 docker ps        # must run with NO permission error before continuing
 ```
-> `newgrp` starts a new shell, so set variables (like B2a's `A_HOST`)
-> **after** it — B2 already does.
+> `newgrp` starts a new shell, so set variables (like B2-ii's `A_HOST`)
+> **after** it — the steps below already do.
 
 **B1 — install NemoClaw + onboard (interactive):**
 ```bash
@@ -169,23 +173,37 @@ nemoclaw list
 docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}'
 ```
 
-**B2a — open the SSH tunnel to Machine A (keep it running for the whole demo):**
-```bash
-# Generate the keypair ONCE and send ~/.ssh/grabclaw_demo.pub to Machine A's
-# operator (they add it forward-only in A3). The private key never leaves here.
-[ -f ~/.ssh/grabclaw_demo ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/grabclaw_demo -C demo-forward
+**B2 (SSH tunnel to Machine A).** This is the one cross-machine handshake, in
+order: **(i) B makes a key → (ii) A trusts it (step A3) → (iii) B opens the
+tunnel.** Keep the tunnel running for the whole demo.
 
+**B2-i — make the key and PRINT the public half** (give that line to A's operator
+for A3; the private key never leaves Machine B):
+```bash
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+rm -f ~/.ssh/grabclaw_demo ~/.ssh/grabclaw_demo.pub      # start clean (no overwrite prompt)
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/grabclaw_demo -C demo-forward
+echo "----- give THIS line to Machine A (step A3): -----"
+cat ~/.ssh/grabclaw_demo.pub
+```
+
+**↳ Now wait until Machine A has added that key (A3).** The tunnel below
+authenticates with it and will fail with `Permission denied (publickey)` until
+A trusts it.
+
+**B2-ii — open the tunnel:**
+```bash
+A_USER=ufoai           # the Machine A account that trusts your key (A's login user)
 A_HOST=192.168.0.2     # A's LAN IP at home; A's public IP / DDNS at the venue
 A_SSH_PORT=22          # the router-forwarded SSH port at the venue
-
 # Bind 0.0.0.0:8000 so the sandbox can reach it via host.openshell.internal.
 # 8000 is already on the local-inference allowlist, so NO custom egress policy
 # is needed. (`autossh` instead of `ssh` auto-reconnects if the link drops.)
-ssh -i ~/.ssh/grabclaw_demo -fN -L 0.0.0.0:8000:127.0.0.1:11434 demo@"$A_HOST" -p "$A_SSH_PORT"
+ssh -i ~/.ssh/grabclaw_demo -fN -L 0.0.0.0:8000:127.0.0.1:11434 "$A_USER@$A_HOST" -p "$A_SSH_PORT"
 curl -s http://127.0.0.1:8000/v1/models    # → should list nemotron-3-super:latest
 ```
 
-**B2b — wire the sandbox to the local tunnel, get the repo, run (single paste):**
+**B3 — wire the sandbox to the local tunnel, get the repo, run (single paste):**
 ```bash
 cd ~ && git clone https://github.com/amamtaiwan/grab_a_claw.git
 cd grab_a_claw && git checkout demo-arch1-remote-inference
@@ -232,7 +250,7 @@ already satisfied — nothing extra to open.
   `A_SSH_PORT=22`); no router config.
 - **At the venue:** A's home router port-forwards **one** external port → A:22;
   Machine B sets `A_HOST` to your public IP / DDNS and `A_SSH_PORT` to that port.
-  **B2b does not change** between rehearsal and venue — only B2a's `A_HOST`/port.
+  **B3 does not change** between rehearsal and venue — only B2-ii's `A_HOST`/port.
 
 **Credential model — the win over a VPN:** the organizers generate the SSH
 keypair on Machine B and send you only the **public** key (A3). No private key,
@@ -241,7 +259,7 @@ keypair on Machine B and send you only the **public** key (A3). No private key,
 even if it leaks the blast radius is exactly "talk to A's Ollama" — and you
 revoke it by deleting one line from `~/.ssh/authorized_keys`.
 
-**Verify end to end:** B2a's `curl http://127.0.0.1:8000/v1/models` lists Super;
+**Verify end to end:** B2-ii's `curl http://127.0.0.1:8000/v1/models` lists Super;
 then a dashboard B1 prompt moves the lobster while **Machine A's** GPU loads
 Super (~90 GB) — proving B's agent reached A through the tunnel.
 
