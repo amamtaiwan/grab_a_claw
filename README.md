@@ -1,6 +1,6 @@
 > # ⚠️ DEMO-ONLY BRANCH — PROBABLY UNSAFE ⚠️
 > **`demo-arch1-remote-inference`** splits the stack so the model runs on a
-> remote workstation (over an OpenVPN tunnel) while the sandbox + agent +
+> remote workstation (over an SSH tunnel) while the sandbox + agent +
 > overlay run on the booth DGX Spark. **This intentionally breaks the network
 > isolation guarantee** that `main` relies on: the sandbox's inference egress
 > is pointed at a remote endpoint instead of being locked to `inference.local`.
@@ -67,9 +67,9 @@ and every guardrail runs locally on Machine B.
 
 ```
 [ MACHINE A — home workstation, the 96 GB GPU ]        [ MACHINE B — booth box (NVIDIA GPU, Ubuntu 24.04) ]
-  Ollama serving Nemotron 3 Super (+ Nano)      ← LAN / VPN →   NemoClaw sandbox + OpenClaw agent
-  NemoClaw auth-proxy: token-gated /v1                          ui/overlay.py (the lobster) + 4K display
-  on 0.0.0.0:11435  (already LAN-facing)          (text only)   sandbox inference → Machine A
+  Ollama serving Nemotron 3 Super (+ Nano)      ← SSH tunnel →   NemoClaw sandbox + OpenClaw agent
+  on 127.0.0.1:11434                                             ui/overlay.py (the lobster) + 4K display
+  + sshd (forward-only key, one port)             (text only)    sandbox → host.openshell.internal:8000 → A
 ```
 
 | | Machine A (LLM server) | Machine B (desktop + agent + overlay) |
@@ -77,13 +77,13 @@ and every guardrail runs locally on Machine B.
 | Holds the model | ✅ Super in Ollama (`/usr/share/ollama`) | ❌ remote-only (pull Nano locally just as a fallback) |
 | Runs the sandbox / agent | ❌ | ✅ NemoClaw + OpenShell + OpenClaw |
 | Runs the lobster overlay + display | ❌ | ✅ drives the booth 4K monitor |
-| Exposes on the network | token-gated `/v1` on `:11435` | nothing |
+| Exposes on the network | SSH only (a forward-only key) | nothing |
 
 > ⚠️ Pointing Machine B's sandbox at a remote inference endpoint is exactly the
 > network-isolation relaxation this branch is about — see
 > [docs/DEMO_ARCH1.md](./docs/DEMO_ARCH1.md) for the threat model.
 
-### Machine A — serve the model (run in your terminal)
+### Machine A — serve the model + expose it over SSH (run in your terminal)
 
 ```bash
 # A1. Bring Ollama up (it holds Super + Nano). Needs sudo.
@@ -93,21 +93,24 @@ sudo systemctl start ollama && systemctl is-active ollama
 curl -s http://127.0.0.1:11434/api/generate \
   -d '{"model":"nemotron-3-super:latest","prompt":"PONG","stream":false}' >/dev/null
 
-# A3. NemoClaw's auth-proxy already serves an OpenAI-compatible /v1 on
-#     0.0.0.0:11435 (token-gated). Note these three for Machine B:
-hostname -I | awk '{print $1}'        # MACHINE_A_IP = 192.168.0.2 (LAN, and the same over the venue OpenVPN)
-echo 11435                            # proxy port
-cat ~/.nemoclaw/ollama-proxy-token    # bearer token  (treat as a secret — do not commit/share)
+# A3. Add the organizer's PUBLIC key as a FORWARD-ONLY key. They generate the
+#     keypair on Machine B and send you only the public key — no private key is
+#     ever transmitted. This key can do exactly ONE thing: tunnel to the local
+#     Ollama. No shell, no other port, no LAN host. Revoke later by deleting it.
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+cat >> ~/.ssh/authorized_keys <<'KEY'
+no-pty,no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:11434",command="echo forward-only; sleep infinity" ssh-ed25519 AAAA...PASTE-ORGANIZER-PUBLIC-KEY... demo-forward
+KEY
+chmod 600 ~/.ssh/authorized_keys
 
-# A4. Confirm the LAN endpoint actually serves Super:
-curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
-  "http://$(hostname -I | awk '{print $1}'):11435/v1/models"   # → should list nemotron-3-super:latest
+# A4. Make SSH reachable from the venue: keep key-only auth (no passwords), and
+#     port-forward ONE external port on your home router → this machine's :22.
+#     (SSH is the only thing exposed; the model port :11434 stays local.)
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && sudo systemctl reload ssh
+# Note for Machine B:
+hostname -I | awk '{print $1}'   # A's LAN IP (192.168.0.2) for the home rehearsal;
+                                 # your router's public IP / DDNS + forwarded port at the venue
 ```
-
-(If you'd rather not deal with a token, bind Ollama to the LAN instead —
-`sudo systemctl edit ollama` → `OLLAMA_HOST=0.0.0.0:11434` → restart — and have
-Machine B use `http://MACHINE_A_IP:11434/v1` with any `apiKey`. Simpler, but the
-raw model port is then open on the LAN.)
 
 ### Machine B — sandbox + agent + lobster (from a blank Ubuntu 24.04 box)
 
@@ -144,7 +147,7 @@ own `newgrp docker`; or log out/in once and forget it.)
 newgrp docker
 docker ps        # must run with NO permission error before continuing
 ```
-> `newgrp` starts a new shell, so set variables (like B2's `MACHINE_A_IP`)
+> `newgrp` starts a new shell, so set variables (like B2a's `A_HOST`)
 > **after** it — B2 already does.
 
 **B1 — install NemoClaw + onboard (interactive):**
@@ -166,91 +169,84 @@ nemoclaw list
 docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}'
 ```
 
-**B2 — point inference at Machine A, get the repo, run (single paste):**
+**B2a — open the SSH tunnel to Machine A (keep it running for the whole demo):**
 ```bash
-# >>> EDIT THESE TWO LINES <<<
-MACHINE_A_IP=192.168.0.2                      # A's LAN IP — same at home and over the venue OpenVPN tunnel
-A_TOKEN='paste-machine-A-proxy-token-here'    # = `cat ~/.nemoclaw/ollama-proxy-token` on Machine A
+# Generate the keypair ONCE and send ~/.ssh/grabclaw_demo.pub to Machine A's
+# operator (they add it forward-only in A3). The private key never leaves here.
+[ -f ~/.ssh/grabclaw_demo ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/grabclaw_demo -C demo-forward
 
+A_HOST=192.168.0.2     # A's LAN IP at home; A's public IP / DDNS at the venue
+A_SSH_PORT=22          # the router-forwarded SSH port at the venue
+
+# Bind 0.0.0.0:8000 so the sandbox can reach it via host.openshell.internal.
+# 8000 is already on the local-inference allowlist, so NO custom egress policy
+# is needed. (`autossh` instead of `ssh` auto-reconnects if the link drops.)
+ssh -i ~/.ssh/grabclaw_demo -fN -L 0.0.0.0:8000:127.0.0.1:11434 demo@"$A_HOST" -p "$A_SSH_PORT"
+curl -s http://127.0.0.1:8000/v1/models    # → should list nemotron-3-super:latest
+```
+
+**B2b — wire the sandbox to the local tunnel, get the repo, run (single paste):**
+```bash
 cd ~ && git clone https://github.com/amamtaiwan/grab_a_claw.git
 cd grab_a_claw && git checkout demo-arch1-remote-inference
 python3 -m venv ui/.venv && ui/.venv/bin/pip install -r ui/requirements.txt
 nemoclaw hack-agent skill install ./skills/desktop-tidy
 nemoclaw hack-agent skill install ./skills/desktop-arrange
 
-# Repoint the sandbox's inference at Machine A (the one real change vs main):
+# The agent talks to the LOCAL host (host.openshell.internal:8000 — already on
+# the local-inference allowlist); the ssh -L tunnel carries it to A's Super, so
+# NO custom egress policy is needed. Onboarding registered the small model you
+# picked; retarget id/name/primary at Super so the agent actually requests it
+# (setting only `id` leaves the agent on the small model).
 SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
 cfg(){ docker exec --user sandbox -e HOME=/home/sandbox \
   -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" openclaw config set "$@"; }
-cfg models.providers.inference.baseUrl    "http://$MACHINE_A_IP:11435/v1"
-cfg models.providers.inference.apiKey     "$A_TOKEN"
-# Onboarding registered the small model you picked; retarget ALL of these at
-# Super (id = upstream model param sent to A; name = openclaw's id for it;
-# primary = the model the agent actually selects). Setting only `id` leaves the
-# agent pointing at the small model — and since A also has it pulled, you'd
-# silently run the small model on A instead of Super.
+cfg models.providers.inference.baseUrl          "http://host.openshell.internal:8000/v1"
+cfg models.providers.inference.apiKey           "unused"
 cfg 'models.providers.inference.models[0].id'   "nemotron-3-super:latest"
 cfg 'models.providers.inference.models[0].name' "inference/nemotron-3-super:latest"
 cfg agents.defaults.model.primary               "inference/nemotron-3-super:latest"
 cfg tools.toolSearch false
-
-# Open the sandbox's egress to Machine A. A fresh sandbox enforces an egress
-# allowlist (via an internal proxy): the agent may reach inference.local /
-# host.openshell.internal and the package registries, but NOT A's IP — so
-# without this it silently falls back to LOCAL inference and A's GPU never moves.
-# This is the "open the box" step (docs/DEMO_ARCH1.md). The preset hardcodes
-# 192.168.0.2 — edit policies/remote-inference.yaml if A's IP differs.
-nemoclaw hack-agent policy-add --from-file ./policies/remote-inference.yaml --yes
-
 docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # reload agent config
-
-# sanity: does Machine A serve Super over the network? (should list nemotron-3-super)
-curl -s -H "Authorization: Bearer $A_TOKEN" "http://$MACHINE_A_IP:11435/v1/models"
 
 ./scripts/pre-demo.sh hack-agent           # seeds desktop, closes the gate, prints dashboard URL
 ui/.venv/bin/python -u ui/overlay.py       # lobster overlay; 4K auto-detects SCALE=2.0
 ```
 
-### Network — home rehearsal vs venue (OpenVPN)
+### Network — home rehearsal vs venue (SSH tunnel)
 
-The plain HTTP `:11435` proxy is **never exposed to the public internet**. The
-two boxes share a private subnet — your LAN at home, an OpenVPN tunnel at the
-venue — and `MACHINE_A_IP` is just Machine A's address on that subnet.
+The model port `:11434` is **never exposed** — only SSH is. Machine B opens an
+SSH tunnel to Machine A, and the sandbox treats it as a *local* endpoint:
 
-- **Home rehearsal (same LAN):** `MACHINE_A_IP=192.168.0.2` (A's LAN IP). No VPN.
-- **At the venue (OpenVPN, server on your home router):** the router runs an
-  OpenVPN server and routes VPN clients into the home LAN, so once Machine B is
-  connected it reaches Machine A at the **same** `192.168.0.2:11435` — **B2 does
-  not change**; B only has to bring the tunnel up first. Only the router's
-  cert-authenticated OpenVPN port faces the internet; the token rides *inside*
-  the encrypted tunnel.
-
-**On your home router (one-time):** enable the built-in OpenVPN **server**, make
-sure its clients are **allowed to reach the LAN subnet** (`192.168.0.0/24` — not
-"internet-only"), and **export the client `.ovpn` profile**. Exact menu names
-vary by router (ASUSWRT / pfSense / OPNsense / OpenWRT / UniFi). The router opens
-its own VPN port; you do **not** port-forward `11435`.
-
-**Send the organizers three things** (the `.ovpn` carries the certs/keys — treat
-it like a credential):
-1. the client **`.ovpn`** profile,
-2. the proxy **token** — `cat ~/.nemoclaw/ollama-proxy-token` on Machine A,
-3. `MACHINE_A_IP=192.168.0.2` and `model id = nemotron-3-super:latest`.
-
-**Machine B at the venue — connect the VPN before B2:**
-```bash
-sudo apt install -y openvpn
-sudo openvpn --config client.ovpn --daemon       # or import client.ovpn into NetworkManager
-# confirm the tunnel reaches Machine A's proxy (use the token they sent):
-curl -s -H "Authorization: Bearer <token>" http://192.168.0.2:11435/v1/models   # → lists nemotron-3-super
 ```
-Then run **B2** exactly as written (`MACHINE_A_IP=192.168.0.2`).
+sandbox → host.openshell.internal:8000     (already on the local-inference
+         (B's ssh -L listener)              allowlist → no custom egress policy)
+       → [ encrypted SSH ] →
+         Machine A 127.0.0.1:11434 (Ollama / Super)
+```
 
-**Verify end to end:** the curl above lists Super; then a dashboard B1 prompt
-moves the lobster — proving B's agent reached A's Super through the tunnel.
+Because the agent only ever connects to the local host, the egress allowlist is
+already satisfied — nothing extra to open.
 
-> After the demo: stop the OpenVPN client on B, disable the router's VPN server,
-> and (optional, belt-and-braces) rotate the proxy token on A.
+- **Home rehearsal (same LAN):** tunnel straight to A's LAN IP (`A_HOST=192.168.0.2`,
+  `A_SSH_PORT=22`); no router config.
+- **At the venue:** A's home router port-forwards **one** external port → A:22;
+  Machine B sets `A_HOST` to your public IP / DDNS and `A_SSH_PORT` to that port.
+  **B2b does not change** between rehearsal and venue — only B2a's `A_HOST`/port.
+
+**Credential model — the win over a VPN:** the organizers generate the SSH
+keypair on Machine B and send you only the **public** key (A3). No private key,
+`.ovpn`, or bearer token is ever transmitted. The key is locked
+(`permitopen="127.0.0.1:11434"`, no shell) to a single port on a single host, so
+even if it leaks the blast radius is exactly "talk to A's Ollama" — and you
+revoke it by deleting one line from `~/.ssh/authorized_keys`.
+
+**Verify end to end:** B2a's `curl http://127.0.0.1:8000/v1/models` lists Super;
+then a dashboard B1 prompt moves the lobster while **Machine A's** GPU loads
+Super (~90 GB) — proving B's agent reached A through the tunnel.
+
+> After the demo: kill the `ssh -L` on B, remove the router's SSH port-forward,
+> and delete the forward-only key line from A's `authorized_keys`.
 
 ## Setup (single-machine reference)
 

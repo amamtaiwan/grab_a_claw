@@ -8,9 +8,9 @@
 
 ```
 [ HOME — your workstation ]                 [ BOOTH — DGX Spark ]
-  Ollama + Nemotron 3 Super 120B    ←  OpenVPN  →   NemoClaw sandbox
+  Ollama + Nemotron 3 Super 120B    ←   SSH    →    NemoClaw sandbox
   (96 GB Blackwell, ~1.79 TB/s)       (text only)    + OpenClaw agent
-  proxy /v1 on LAN/VPN IP :11435                      + ui/overlay.py (lobster)
+  /v1 on 127.0.0.1:11434 (SSH only)                  + ui/overlay.py (lobster)
                                                       + drives the booth 4K display
                                                       + Nano 30B loaded LOCAL as fallback
 ```
@@ -29,16 +29,18 @@ the Spark**, so a flaky conference network never touches the visuals.
    (the gateway's internal virtual host). On `main`, the agent literally
    cannot reach the open internet.
 
-This branch **repoints the sandbox's inference provider at a remote IP reached
-over an OpenVPN tunnel**. That means:
+This branch **repoints the sandbox's inference at the workstation, reached over
+an SSH tunnel** (the sandbox dials a local port that `ssh -L` forwards to the
+workstation's Ollama). That means:
 
 - The sandbox now has a live network path off-box (to the workstation). A
   compromised or jailbroken agent could, in principle, use that channel for
   exfiltration or C2 — the network-isolation guarantee no longer holds.
-- The inference traffic rides an OpenVPN tunnel (encrypted; only the router's
-  cert-authenticated VPN port faces the internet, never the `:11435` proxy) but
-  the *policy* that used to forbid all non-`inference.local` egress is relaxed.
-- We accept this **only** because the demo runs over a controlled OpenVPN tunnel
+- The traffic rides an SSH tunnel (encrypted; only the workstation's SSH port
+  faces the internet, never the `:11434` model port, and the key handed out is
+  forward-only — `permitopen` to that one port, no shell) but the *policy* that
+  used to forbid all non-`inference.local` egress is relaxed.
+- We accept this **only** because the demo runs over a controlled SSH tunnel
   with exactly two known nodes, for ~20 minutes, with an operator watching.
 
 For any real deployment, inference must stay local (as on `main`) or be
@@ -47,97 +49,80 @@ fronted by a policy-enforced proxy that still satisfies `openshell policy prove`
 ## Setup (rehearse this BEFORE the event)
 
 ### 0. Prereqs
-- OpenVPN: the **home router** runs the built-in OpenVPN **server**; the Spark
-  runs the OpenVPN **client** with a `.ovpn` profile exported from the router.
-- Workstation: Ollama + Super already working (this is `main`'s normal state).
+- SSH: the **Spark** opens an `ssh -L` tunnel to the workstation; the workstation
+  trusts a **forward-only public key** the Spark's operator generated.
+- Workstation: Ollama + Super already working (this is `main`'s normal state);
+  sshd running, key-only auth.
 - Spark: NemoClaw + OpenShell + OpenClaw installed; overlay deps installed.
 
-### 1. OpenVPN — router server, Spark client
-On the **home router**: enable the built-in OpenVPN server, allow VPN clients to
-reach the LAN subnet (`192.168.0.0/24`, not internet-only), and export the
-client `.ovpn`. The router opens its own VPN port — you do **not** port-forward
-`:11435`. On the **Spark**:
-```bash
-sudo apt install -y openvpn
-sudo openvpn --config client.ovpn --daemon      # or import into NetworkManager
-```
-Because the router routes VPN clients into the LAN, the Spark reaches the
-workstation at its **LAN IP** — so `WORKSTATION_IP = 192.168.0.2` both at home
-and over the venue tunnel. Verify with the proxy token:
-```bash
-curl -s -H "Authorization: Bearer <token>" http://192.168.0.2:11435/v1/models   # → lists Super
-```
-
-### 2. Workstation — serve the model on the network
-NemoClaw already runs an **auth-proxy** that exposes an OpenAI-compatible `/v1`
-on `0.0.0.0:11435`, **token-gated** (it forwards to the system Ollama on
-`127.0.0.1:11434`, which holds Super + Nano under `/usr/share/ollama`). That
-proxy is already network-facing, so you usually only need to bring Ollama up:
+### 1. Workstation — serve the model + trust a forward-only key
 ```bash
 # workstation
-sudo systemctl start ollama                       # Super lives here
+sudo systemctl start ollama                       # Super lives here (127.0.0.1:11434)
 curl -s http://127.0.0.1:11434/api/generate \
   -d '{"model":"nemotron-3-super:latest","prompt":"PONG","stream":false}' >/dev/null  # warm
-# note for the Spark: WORKSTATION_IP=192.168.0.2 (LAN, and the same over the
-# venue OpenVPN tunnel), port 11435, and the bearer token:
-cat ~/.nemoclaw/ollama-proxy-token                # treat as a secret
-curl -s -H "Authorization: Bearer $(cat ~/.nemoclaw/ollama-proxy-token)" \
-  http://$WORKSTATION_IP:11435/v1/models          # → lists nemotron-3-super:latest
-```
-> Tokenless alternative: bind Ollama itself to the network
-> (`sudo systemctl edit ollama` → `OLLAMA_HOST=0.0.0.0:11434` → restart) and use
-> bare `http://$WORKSTATION_IP:11434/v1`. Simpler config, but the raw model port
-> is open on the LAN/VPN subnet — keep it off the public internet (the OpenVPN
-> tunnel already does that), and ideally restrict it with `ufw` to just the VPN
-> subnet / Spark.
 
-### 3. Spark — point NemoClaw inference at the workstation
-The sandbox's OpenClaw config routes inference via `inference.local`. Repoint
-the provider base URL (and API key) at the workstation's token-gated proxy:
+# Trust the Spark operator's PUBLIC key, locked to a single port, no shell:
+cat >> ~/.ssh/authorized_keys <<'KEY'
+no-pty,no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:11434",command="echo forward-only; sleep infinity" ssh-ed25519 AAAA...SPARK-OPERATOR-PUBKEY... demo-forward
+KEY
+chmod 600 ~/.ssh/authorized_keys
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && sudo systemctl reload ssh
+```
+`WORKSTATION_IP = 192.168.0.2` for the home rehearsal. At the venue, port-forward
+**one** external port on the home router → workstation:22; the Spark uses your
+public IP / DDNS + that port. Only SSH is ever exposed; `:11434` stays local.
+
+### 2. Spark — open the SSH tunnel
+```bash
+# generate ONCE; send only the .pub to the workstation operator (step 1)
+[ -f ~/.ssh/grabclaw_demo ] || ssh-keygen -t ed25519 -N '' -f ~/.ssh/grabclaw_demo -C demo-forward
+A_HOST=192.168.0.2     # workstation LAN IP at home; public IP / DDNS at the venue
+A_SSH_PORT=22          # the router-forwarded SSH port at the venue
+# bind 0.0.0.0:8000 so the sandbox can reach it via host.openshell.internal
+ssh -i ~/.ssh/grabclaw_demo -fN -L 0.0.0.0:8000:127.0.0.1:11434 demo@"$A_HOST" -p "$A_SSH_PORT"
+curl -s http://127.0.0.1:8000/v1/models          # → lists nemotron-3-super:latest
+```
+(`autossh` instead of `ssh` auto-reconnects if the link drops mid-demo.)
+
+### 3. Spark — point NemoClaw inference at the tunnel
+The sandbox talks to the **local host** (`host.openshell.internal:8000`, which is
+already on the `local-inference` egress allowlist); the tunnel carries it to the
+workstation's Super. **No custom egress policy is needed** (vs a direct-IP setup),
+because the agent never dials a non-local address.
 ```bash
 SBX=$(docker ps --filter label=openshell.ai/sandbox-name=hack-agent --format '{{.Names}}' | head -1)
-docker exec --user sandbox -e HOME=/home/sandbox \
-  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
-  openclaw config set models.providers.inference.baseUrl "http://$WORKSTATION_IP:11435/v1"
-docker exec --user sandbox -e HOME=/home/sandbox \
-  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" \
-  openclaw config set models.providers.inference.apiKey "<workstation proxy token>"
-# bounce openclaw to apply
-docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'
+cfg(){ docker exec --user sandbox -e HOME=/home/sandbox \
+  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json "$SBX" openclaw config set "$@"; }
+cfg models.providers.inference.baseUrl          "http://host.openshell.internal:8000/v1"
+cfg models.providers.inference.apiKey           "unused"
+cfg 'models.providers.inference.models[0].id'   "nemotron-3-super:latest"
+cfg 'models.providers.inference.models[0].name' "inference/nemotron-3-super:latest"
+cfg agents.defaults.model.primary               "inference/nemotron-3-super:latest"
+docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'   # reload agent config
 ```
-`$WORKSTATION_IP` = the workstation's LAN IP `192.168.0.2` — the same at home
-and over the venue OpenVPN tunnel (the router routes VPN clients into the LAN),
-so nothing in this step changes between rehearsal and the booth.
-> NOTE — **required on a fresh sandbox.** A newly-onboarded sandbox enforces an
-> egress allowlist (internal proxy): the agent can reach `inference.local` /
-> `host.openshell.internal` + package registries, but **not** the workstation's
-> IP — so it silently falls back to LOCAL inference and the workstation GPU never
-> moves. Open egress to it (this is the step that "opens the box" — see threat
-> model above):
-> ```bash
-> # policies/remote-inference.yaml allows host 192.168.0.2:11435 — edit if needed
-> nemoclaw hack-agent policy-add --from-file ./policies/remote-inference.yaml --yes
-> ```
-> Verify the agent (not just the host) can now reach it — `docker exec` bypasses
-> the proxy, so test from the agent's environment or just watch the workstation
-> GPU load Super on the first dashboard turn.
+> Retarget `id` **and** `name` **and** `agents.defaults.model.primary` — the
+> agent selects its model by `primary` (a model *name*); changing only `id`
+> leaves it requesting the small onboarding model. Confirm it's really Super by
+> watching the **workstation** GPU load ~90 GB on the first dashboard turn
+> (`docker exec` from the host bypasses the egress proxy, so a host-side curl is
+> not proof the *agent* reached it).
+>
+> The older `policies/remote-inference.yaml` preset is only for a direct-IP
+> (no-SSH) variant — with the SSH tunnel you do not apply it.
 
 ### 4. Spark — local Nano fallback
-Load Nano locally so a network drop has an instant switch-to-local path:
+The Spark onboarded with local Nano (`nemotron-3-nano:30b`), so a network drop
+has an instant switch-to-local path. If the workstation (or the tunnel) becomes
+unreachable mid-demo, flip the sandbox back to the Spark's own Ollama (`cfg` is
+the helper from step 3):
 ```bash
-ollama pull nemotron-3-nano:latest     # or your local Nano build
-ollama run nemotron-3-nano:latest "PONG"   # warm it
-```
-If the workstation becomes unreachable mid-demo, flip the provider back to the
-Spark-local Ollama:
-```bash
-docker exec --user sandbox -e HOME=/home/sandbox \
-  -e OPENCLAW_CONFIG_PATH=/sandbox/.openclaw/openclaw.json \
-  "$SBX" openclaw config set \
-  models.providers.inference.baseUrl "http://127.0.0.1:11434/v1"
-docker exec --user sandbox ... openclaw config set \
-  models.providers.inference.models[0].id "nemotron-3-nano:latest"
+cfg models.providers.inference.baseUrl          "https://inference.local/v1"
+cfg 'models.providers.inference.models[0].id'   "nemotron-3-nano:30b"
+cfg 'models.providers.inference.models[0].name' "inference/nemotron-3-nano:30b"
+cfg agents.defaults.model.primary               "inference/nemotron-3-nano:30b"
 docker exec --user 0 "$SBX" pkill -9 -f '^openclaw$'
+# warm it first if needed:  ollama run nemotron-3-nano:30b "PONG"
 ```
 
 ### 5. Speed — turn OFF thinking for the demo
@@ -176,17 +161,18 @@ no config flag needed:
 
 ## Demo-day runbook
 
-1. Workstation at home: Ollama up, Super warm; router's OpenVPN server enabled.
-2. Spark at booth: OpenVPN client connected; `curl -H "Authorization: Bearer <token>" http://192.168.0.2:11435/v1/models` lists Super.
+1. Workstation at home: Ollama up, Super warm; sshd up, forward-only key trusted.
+2. Spark at booth: `ssh -L` tunnel up; `curl http://127.0.0.1:8000/v1/models` lists Super.
 3. Spark: `./scripts/pre-demo.sh hack-agent` (seeds demo desktop, revokes gate).
 4. Spark: launch overlay in a shell **with docker group active** (`newgrp docker` first).
 5. Dashboard: run A → B1 → B2(locked→unlock)→ B3.
-6. If a turn hangs > 60 s: check the tunnel (`ping 192.168.0.2`, OpenVPN client
-   status); if the workstation is unreachable, do step 4 of "Spark — local Nano
-   fallback".
+6. If a turn hangs > 60 s: check the tunnel (`curl http://127.0.0.1:8000/v1/models`;
+   is the `ssh -L` still up?); if the workstation is unreachable, do step 4
+   "Spark — local Nano fallback".
 7. Ultimate fallback: play the recorded demo videos (embedded in `main`'s README).
 
 ## Teardown
-- Revert Spark inference route to local; stop the OpenVPN client on the Spark and
-  disable the router's OpenVPN server; optionally rotate the workstation proxy
-  token. This branch never merges to `main`.
+- Revert the Spark inference route to local; kill the `ssh -L` tunnel on the
+  Spark, remove the router's SSH port-forward, and delete the forward-only key
+  line from the workstation's `~/.ssh/authorized_keys`. This branch never merges
+  to `main`.
