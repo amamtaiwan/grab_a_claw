@@ -110,7 +110,11 @@ grep -n PASTE_MACHINE_B ~/.ssh/authorized_keys && echo "!! you left the placehol
 # A4. Make SSH reachable from the venue: keep key-only auth (no passwords), and
 #     port-forward ONE external port on your home router → this machine's :22.
 #     (SSH is the only thing exposed; the model port :11434 stays local.)
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && sudo systemctl reload ssh
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+# Ubuntu 24.04+ uses socket-activated sshd (ssh.service shows "not active" by
+# design — only spawns on inbound connection). Restart ssh.socket; on older
+# distros that fall through to ssh.service.
+sudo systemctl restart ssh.socket 2>/dev/null || sudo systemctl restart ssh
 # Note for Machine B:
 hostname -I | awk '{print $1}'   # A's LAN IP (192.168.0.2) for the home rehearsal;
                                  # your router's public IP / DDNS + forwarded port at the venue

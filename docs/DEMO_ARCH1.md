@@ -67,7 +67,9 @@ cat >> ~/.ssh/authorized_keys <<'KEY'
 no-pty,no-agent-forwarding,no-X11-forwarding,permitopen="127.0.0.1:11434",command="echo forward-only; sleep infinity" ssh-ed25519 AAAA...SPARK-OPERATOR-PUBKEY... demo-forward
 KEY
 chmod 600 ~/.ssh/authorized_keys
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && sudo systemctl reload ssh
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+# Ubuntu 24.04+ uses socket-activated sshd (ssh.service "not active" by design).
+sudo systemctl restart ssh.socket 2>/dev/null || sudo systemctl restart ssh
 ```
 `WORKSTATION_IP = 192.168.0.2` for the home rehearsal. At the venue, port-forward
 **one** external port on the home router → workstation:22; the Spark uses your
